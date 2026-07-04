@@ -5,7 +5,7 @@ It couples a clean stdlib-only Python core with Kali Linux security tools via a 
 
 ## Quick Start
 
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 reconforge --help
