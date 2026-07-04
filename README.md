@@ -21,7 +21,6 @@ reconforge --help
   - nmap (service version detection)
   - katana (web crawling / endpoint discovery)
   - whois (domain registration lookup)
-  - gowitness (screenshot capture)
 
 
 ## Reconnaissance Workflow
@@ -77,7 +76,6 @@ equires attribute.
  | katana       |
  | js_discovery |
  | endpoints    |
- | screenshot   |
  +------+-------+
         |
         v
@@ -121,8 +119,7 @@ Within a stage all plugins whose dependencies are satisfied run **concurrently**
 | wayback | 5 | normalize_url | (stdlib urllib) | katana, js_discovery |
 | katana | 5 | httpx_alive | katana | wayback, js_discovery |
 | js_discovery | 5 | katana | (stdlib re) | wayback, katana |
-| endpoints | 5 | katana | (stdlib re) | wayback, screenshot |
-| screenshot | 5 | httpx_alive | gowitness | wayback, endpoints |
+| endpoints | 5 | katana | (stdlib re) | wayback, js_discovery |
 | merge_engine | 6 | all plugins | (stdlib) | (last stage, single) |
 
 ## Tool Parallelism & Sequencing
@@ -144,7 +141,7 @@ is never blocked by a single slow tool across the entire pipeline.
 
 ### Tool invocation patterns
 
-- **subprocess tools** (naabu, nmap, subfinder, assetfinder, httpx, katana, whois, gowitness):
+- **subprocess tools** (naabu, nmap, subfinder, assetfinder, httpx, katana, whois):
   Called via subprocess.run() with stdin input, stdout capture, and explicit timeout.
 - **stdlib HTTP tools** (crtsh, wayback, headers, robots_txt, sitemap):
   Use urllib.request.urlopen() — zero Python dependencies, mockable.
@@ -177,8 +174,8 @@ Useful flags:
 src/reconforge/
   cli.py
   core/          (stdlib-only core)
-  plugins/       (20 plugins)
-  reporting/     (JSON, MD, HTML + screenshot provider)
+  plugins/       (19 plugins)
+  reporting/     (JSON, MD, HTML reporters)
 tests/
   plugins/       (per-plugin unit tests)
 ```
@@ -218,7 +215,7 @@ The Reporter produces three formats from a single PipelineResult:
 - Markdown - human-readable summary with timeline
 - HTML - standalone styled report
 
-Artifacts: artifacts/reports/ and artifacts/screenshots/
+Artifacts: artifacts/reports/
 
 ## Security
 
