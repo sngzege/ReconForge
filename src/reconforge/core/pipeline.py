@@ -16,7 +16,6 @@ Design:
 from __future__ import annotations
 
 from collections import defaultdict
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import timedelta
 from queue import Queue
 from typing import Any
@@ -233,19 +232,18 @@ class Pipeline:
         """
         logger.info(f"Executing plugin: {plugin.name}")
 
-        # Build upstream_results from declared requires
+        # Build upstream_results from declared requires.
+        # Pass whatever is available — let the plugin handle missing data
+        # gracefully via KeyError or .get() checks in its own run().
         upstream_results: dict[str, Result] = {}
         for dep_name in plugin.requires:
-            if dep_name not in self._results:
-                logger.error(
-                    f"Plugin {plugin.name} requires '{dep_name}' but it is not available"
+            if dep_name in self._results:
+                upstream_results[dep_name] = self._results[dep_name]
+            else:
+                logger.warning(
+                    f"Plugin {plugin.name}: upstream '{dep_name}' not available, "
+                    f"passing partial results"
                 )
-                return create_failure_result(
-                    module=plugin.name,
-                    error=f"Required upstream result '{dep_name}' not available",
-                    duration=timedelta(0),
-                )
-            upstream_results[dep_name] = self._results[dep_name]
 
         result = execute_plugin_safely(plugin, target, upstream_results=upstream_results)
         self._results[plugin.name] = result
@@ -267,45 +265,32 @@ class Pipeline:
         pipeline_result = PipelineResult()
 
         logger.info(f"Starting pipeline for target: {target}")
-        logger.info(f"Plugins to execute: {list(self._plugins.keys())}")
+        logger.debug(f"Plugins to execute: {list(self._plugins.keys())}")
 
         try:
             stages = self._get_execution_order()
-            logger.debug(f"Execution stages: {stages}")
+            plugins_in_order = [
+                plugin_name
+                for stage in stages
+                for plugin_name in stage
+            ]
 
-            for stage_idx, stage in enumerate(stages):
-                logger.info(
-                    f"Stage {stage_idx + 1}/{len(stages)}: {stage}"
-                )
-
-                # Execute plugins in this stage concurrently
-                with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
-                    futures: dict[Future[Result], str] = {}
-
-                    for plugin_name in stage:
-                        plugin = self._plugins[plugin_name]
-                        future = executor.submit(
-                            self._execute_plugin, plugin, target
-                        )
-                        futures[future] = plugin_name
-
-                    # Collect results as they complete
-                    for future in as_completed(futures):
-                        plugin_name = futures[future]
-                        try:
-                            result = future.result()
-                            pipeline_result.add_result(result)
-                            logger.info(
-                                f"Plugin {plugin_name} completed: {result.status.value}"
-                            )
-                        except Exception as e:
-                            logger.error(f"Plugin {plugin_name} raised: {e}")
-                            error_result = create_failure_result(
-                                module=plugin_name,
-                                error=str(e),
-                                duration=timedelta(0),
-                            )
-                            pipeline_result.add_result(error_result)
+            for plugin_name in plugins_in_order:
+                plugin = self._plugins[plugin_name]
+                try:
+                    result = self._execute_plugin(plugin, target)
+                    pipeline_result.add_result(result)
+                    logger.info(
+                        f"Plugin {plugin_name} completed: {result.status.value}"
+                    )
+                except Exception as e:
+                    logger.error(f"Plugin {plugin_name} raised: {e}")
+                    error_result = create_failure_result(
+                        module=plugin_name,
+                        error=str(e),
+                        duration=timedelta(0),
+                    )
+                    pipeline_result.add_result(error_result)
 
         except PipelineError as e:
             logger.error(f"Pipeline error: {e}")

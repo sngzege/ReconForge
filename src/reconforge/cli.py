@@ -20,10 +20,49 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from collections import defaultdict
+
 from reconforge.core.config import Config, ConfigError, load_config
 from reconforge.core.logging_setup import setup_logging
 from reconforge.core.pipeline import Pipeline
 from reconforge.core.plugin import BasePlugin
+from reconforge.reporting.reporter import Reporter
+
+
+def _topo_sort(requires: dict[str, list[str]], names: list[str]) -> list[str]:
+    """Topological sort of plugin names by their requires dependencies.
+
+    Args:
+        requires: Mapping of plugin name -> list of required upstream plugin names.
+        names: Ordered list of plugin names to sort.
+
+    Returns:
+        Plugin names in dependency-safe order.
+    """
+    in_degree: dict[str, int] = {n: 0 for n in names}
+    dependents: dict[str, list[str]] = defaultdict(list)
+
+    name_set = set(names)
+    for name in names:
+        for dep in requires.get(name, []):
+            if dep in name_set:
+                in_degree[name] += 1
+                dependents[dep].append(name)
+
+    queue = [n for n, d in in_degree.items() if d == 0]
+    result: list[str] = []
+
+    while queue:
+        result.extend(queue)
+        next_queue: list[str] = []
+        for n in queue:
+            for dep in dependents[n]:
+                in_degree[dep] -= 1
+                if in_degree[dep] == 0:
+                    next_queue.append(dep)
+        queue = next_queue
+
+    return result
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -132,14 +171,22 @@ def cmd_scan(args: argparse.Namespace, config: Config) -> int:
         # Filter plugins if specified
         plugin_names = args.plugins if args.plugins else registry.get_names()
 
-        # Build pipeline
-        pipeline = Pipeline(max_workers=args.max_workers)
-
+        # Collect requires for topological sort and pipeline wiring
+        plugin_requires: dict[str, list[str]] = {}
         for name in plugin_names:
             if registry.has(name):
                 plugin = registry.get(name)
-                # Get dependencies from plugin
-                deps = plugin.dependencies if hasattr(plugin, "dependencies") else []
+                plugin_requires[name] = list(plugin.requires)
+
+        sorted_names = _topo_sort(plugin_requires, plugin_names)
+
+        # Build pipeline
+        pipeline = Pipeline(max_workers=args.max_workers)
+
+        for name in sorted_names:
+            if registry.has(name):
+                plugin = registry.get(name)
+                deps = plugin_requires.get(name, [])
                 pipeline.add_plugin(plugin, depends_on=deps)
             else:
                 logger.warning(f"Plugin '{name}' not found, skipping")
@@ -172,6 +219,16 @@ def cmd_scan(args: argparse.Namespace, config: Config) -> int:
                 print(f"  - {item}")
             if len(all_data) > 20:
                 print(f"  ... and {len(all_data) - 20} more")
+
+        # Write full report
+        try:
+            reporter = Reporter(output_dir=config.output_dir)
+            report_paths = reporter.write(result)
+            report_path = report_paths.get("md", report_paths.get("markdown"))
+            if report_path:
+                print(f"\nReport written to: {report_path}")
+        except Exception as e:
+            logger.warning(f"Failed to write report: {e}")
 
         return 0
 
@@ -209,8 +266,8 @@ def cmd_list_plugins(args: argparse.Namespace, config: Config) -> int:
             print(f"  {plugin.name}")
             print(f"    Version: {plugin.version}")
             print(f"    Description: {plugin.description}")
-            if plugin.dependencies:
-                print(f"    Dependencies: {', '.join(plugin.dependencies)}")
+            if plugin.requires:
+                print(f"    Requires: {', '.join(plugin.requires)}")
             print()
 
         return 0
