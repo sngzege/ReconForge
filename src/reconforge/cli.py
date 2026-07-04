@@ -2,7 +2,7 @@
 
 Responsibilities:
 - Parse command-line arguments
-- Dispatch to appropriate commands (scan, list-plugins, etc.)
+- Dispatch to appropriate commands (scan, discovery, list-plugins, etc.)
 - Handle errors gracefully
 - Provide helpful help messages
 
@@ -27,6 +27,21 @@ from reconforge.core.logging_setup import setup_logging
 from reconforge.core.pipeline import Pipeline
 from reconforge.core.plugin import BasePlugin
 from reconforge.reporting.reporter import Reporter
+
+
+# Discovery-phase plugin names: plugins that perform initial reconnaissance
+DISCOVERY_PLUGINS = [
+    "normalize_url",
+    "dns_resolver",
+    "subfinder",
+    "crtsh",
+    "assetfinder",
+    "wayback",
+    "whois_lookup",
+    "httpx_alive",
+    "naabu",
+    "merge_engine",
+]
 
 
 def _topo_sort(requires: dict[str, list[str]], names: list[str]) -> list[str]:
@@ -110,7 +125,7 @@ def create_parser() -> argparse.ArgumentParser:
     # scan command
     scan_parser = subparsers.add_parser(
         "scan",
-        help="Run reconnaissance scan on a target",
+        help="Run full reconnaissance scan on a target",
     )
     scan_parser.add_argument(
         "target",
@@ -122,6 +137,22 @@ def create_parser() -> argparse.ArgumentParser:
         help="Specific plugins to run (default: all)",
     )
     scan_parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=10,
+        help="Maximum concurrent workers (default: 10)",
+    )
+
+    # discovery command
+    disc_parser = subparsers.add_parser(
+        "discovery",
+        help="Run discovery stage only - enumerate subdomains, ports, and services",
+    )
+    disc_parser.add_argument(
+        "target",
+        help="Target to discover (domain, URL, or IP)",
+    )
+    disc_parser.add_argument(
         "--max-workers",
         type=int,
         default=10,
@@ -154,7 +185,6 @@ def cmd_scan(args: argparse.Namespace, config: Config) -> int:
         Exit code (0 for success, 1 for error).
     """
     logger = setup_logging(config, log_dir=Path(config.output_dir) / "logs")
-    logger.info(f"Starting scan for target: {args.target}")
 
     try:
         # Load plugins
@@ -164,8 +194,7 @@ def cmd_scan(args: argparse.Namespace, config: Config) -> int:
         registry = load_plugins(plugin_dir)
 
         if len(registry) == 0:
-            logger.warning("No plugins found. Create plugins in the plugins/ directory.")
-            print("No plugins found. Create plugins in the plugins/ directory.")
+            print("[!] No plugins found.")
             return 0
 
         # Filter plugins if specified
@@ -188,45 +217,22 @@ def cmd_scan(args: argparse.Namespace, config: Config) -> int:
                 plugin = registry.get(name)
                 deps = plugin_requires.get(name, [])
                 pipeline.add_plugin(plugin, depends_on=deps)
-            else:
-                logger.warning(f"Plugin '{name}' not found, skipping")
 
         # Run pipeline
+        print(f"[*] Scanning: {args.target}")
         result = pipeline.run(args.target)
 
-        # Print summary
-        print(f"\n{'=' * 60}")
-        print(f"Scan complete for: {args.target}")
-        print(f"{'=' * 60}")
-        print(f"Duration: {result.duration.total_seconds():.2f}s")
-        print(f"Results: {len(result.results)}")
-        print(f"  - Success: {result.success_count}")
-        print(f"  - Failed: {result.failure_count}")
-        print(f"  - Partial: {result.partial_count}")
+        # Brief summary
+        print(f"[+] Done in {result.duration.total_seconds():.1f}s "
+              f"| {result.success_count} ok, {result.failure_count} failed")
 
-        if result.errors:
-            print(f"\nErrors ({len(result.errors)}):")
-            for error in result.errors[:5]:  # Show first 5 errors
-                print(f"  - {error}")
-            if len(result.errors) > 5:
-                print(f"  ... and {len(result.errors) - 5} more")
-
-        # Print collected data
-        all_data = result.get_all_data()
-        if all_data:
-            print(f"\nCollected {len(all_data)} items:")
-            for item in all_data[:20]:  # Show first 20 items
-                print(f"  - {item}")
-            if len(all_data) > 20:
-                print(f"  ... and {len(all_data) - 20} more")
-
-        # Write full report
+        # Write report with target name
         try:
             reporter = Reporter(output_dir=config.output_dir)
-            report_paths = reporter.write(result)
+            report_paths = reporter.write(result, target=args.target)
             report_path = report_paths.get("md", report_paths.get("markdown"))
             if report_path:
-                print(f"\nReport written to: {report_path}")
+                print(f"[+] Report: {report_path}")
         except Exception as e:
             logger.warning(f"Failed to write report: {e}")
 
@@ -234,7 +240,81 @@ def cmd_scan(args: argparse.Namespace, config: Config) -> int:
 
     except Exception as e:
         logger.error(f"Scan failed: {e}")
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"[!] Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_discovery(args: argparse.Namespace, config: Config) -> int:
+    """Execute the discovery command - enumerate subdomains, ports, services.
+
+    Only runs discovery-phase plugins. Skips tools that are not installed.
+
+    Args:
+        args: Parsed command-line arguments.
+        config: Configuration object.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    logger = setup_logging(config, log_dir=Path(config.output_dir) / "logs")
+
+    try:
+        from reconforge.core.loader import load_plugins
+
+        plugin_dir = Path(__file__).parent / "plugins"
+        registry = load_plugins(plugin_dir)
+
+        # Only use discovery plugins that are available
+        available = [p for p in DISCOVERY_PLUGINS if registry.has(p)]
+        skipped = [p for p in DISCOVERY_PLUGINS if not registry.has(p)]
+
+        if skipped:
+            logger.debug(f"Skipping unavailable plugins: {skipped}")
+
+        if not available:
+            print("[!] No discovery plugins found.")
+            return 1
+
+        # Collect requires for topological sort
+        plugin_requires: dict[str, list[str]] = {}
+        for name in available:
+            plugin = registry.get(name)
+            plugin_requires[name] = list(plugin.requires)
+
+        sorted_names = _topo_sort(plugin_requires, available)
+
+        # Build pipeline
+        pipeline = Pipeline(max_workers=args.max_workers)
+
+        for name in sorted_names:
+            if registry.has(name):
+                plugin = registry.get(name)
+                deps = plugin_requires.get(name, [])
+                pipeline.add_plugin(plugin, depends_on=deps)
+
+        # Run pipeline
+        print(f"[*] Discovery: {args.target}")
+        result = pipeline.run(args.target)
+
+        # Brief summary
+        print(f"[+] Done in {result.duration.total_seconds():.1f}s "
+              f"| {result.success_count} ok, {result.failure_count} failed")
+
+        # Write report with target name
+        try:
+            reporter = Reporter(output_dir=config.output_dir)
+            report_paths = reporter.write(result, target=args.target)
+            report_path = report_paths.get("md", report_paths.get("markdown"))
+            if report_path:
+                print(f"[+] Report: {report_path}")
+        except Exception as e:
+            logger.warning(f"Failed to write report: {e}")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Discovery failed: {e}")
+        print(f"[!] Error: {e}", file=sys.stderr)
         return 1
 
 
@@ -330,6 +410,7 @@ def main() -> None:
     # Dispatch to command handler
     commands = {
         "scan": cmd_scan,
+        "discovery": cmd_discovery,
         "list-plugins": cmd_list_plugins,
         "validate-config": cmd_validate_config,
     }

@@ -221,7 +221,7 @@ class Pipeline:
 
         Collects results from plugins declared in `plugin.requires`
         and passes them as `upstream_results`. If a required upstream
-        result is missing, returns a failure result.
+        result is missing or failed, returns a failure result.
 
         Args:
             plugin: Plugin to execute.
@@ -230,19 +230,14 @@ class Pipeline:
         Returns:
             Result from plugin execution.
         """
-        logger.info(f"Executing plugin: {plugin.name}")
-
         # Build upstream_results from declared requires.
-        # Pass whatever is available — let the plugin handle missing data
-        # gracefully via KeyError or .get() checks in its own run().
         upstream_results: dict[str, Result] = {}
         for dep_name in plugin.requires:
             if dep_name in self._results:
                 upstream_results[dep_name] = self._results[dep_name]
             else:
-                logger.warning(
-                    f"Plugin {plugin.name}: upstream '{dep_name}' not available, "
-                    f"passing partial results"
+                logger.debug(
+                    f"Plugin {plugin.name}: upstream '{dep_name}' not available"
                 )
 
         result = execute_plugin_safely(plugin, target, upstream_results=upstream_results)
@@ -251,6 +246,8 @@ class Pipeline:
 
     def run(self, target: str, **kwargs: Any) -> PipelineResult:
         """Execute the pipeline.
+
+        Skips plugins whose upstream dependencies have failed.
 
         Args:
             target: Target to process (domain, URL, IP, etc.)
@@ -264,8 +261,7 @@ class Pipeline:
         start_time = datetime.now()
         pipeline_result = PipelineResult()
 
-        logger.info(f"Starting pipeline for target: {target}")
-        logger.debug(f"Plugins to execute: {list(self._plugins.keys())}")
+        logger.debug(f"Starting pipeline for target: {target}")
 
         try:
             stages = self._get_execution_order()
@@ -277,12 +273,31 @@ class Pipeline:
 
             for plugin_name in plugins_in_order:
                 plugin = self._plugins[plugin_name]
+
+                # Skip if any required upstream has failed
+                skip = False
+                for dep_name in plugin.requires:
+                    if dep_name in self._results and self._results[dep_name].is_failure:
+                        logger.debug(
+                            f"Skipping {plugin_name}: upstream '{dep_name}' failed"
+                        )
+                        skip = True
+                        break
+
+                if skip:
+                    from reconforge.core.result import create_failure_result
+                    skip_result = create_failure_result(
+                        module=plugin_name,
+                        error=f"Skipped: upstream dependency failed",
+                        duration=timedelta(0),
+                    )
+                    self._results[plugin_name] = skip_result
+                    pipeline_result.add_result(skip_result)
+                    continue
+
                 try:
                     result = self._execute_plugin(plugin, target)
                     pipeline_result.add_result(result)
-                    logger.info(
-                        f"Plugin {plugin_name} completed: {result.status.value}"
-                    )
                 except Exception as e:
                     logger.error(f"Plugin {plugin_name} raised: {e}")
                     error_result = create_failure_result(
@@ -297,10 +312,6 @@ class Pipeline:
             pipeline_result.errors.append(str(e))
 
         pipeline_result.duration = datetime.now() - start_time
-        logger.info(
-            f"Pipeline completed in {pipeline_result.duration.total_seconds():.2f}s: "
-            f"{pipeline_result}"
-        )
 
         return pipeline_result
 

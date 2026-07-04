@@ -52,7 +52,7 @@ def setup_logging(
 ) -> logging.Logger:
     """Set up the logging system for ReconForge.
     Creates a root logger for the application with:
-    - Console handler (INFO level, user-friendly format)
+    - Console handler (WARNING level, minimal output)
     - File handler (DEBUG level, detailed format)
     Args:
         config: Configuration object containing log_level setting.
@@ -76,10 +76,9 @@ def setup_logging(
     if force:
         root_logger.handlers.clear()
 
-    # Console handler - user-friendly output
+    # Console handler - minimal output, only WARNING and above
     console_handler = logging.StreamHandler(sys.stdout)
-    console_level = _get_log_level(config.log_level)
-    console_handler.setLevel(console_level)
+    console_handler.setLevel(logging.WARNING)
     console_formatter = logging.Formatter(_CONSOLE_FORMAT)
     console_handler.setFormatter(console_formatter)
     root_logger.addHandler(console_handler)
