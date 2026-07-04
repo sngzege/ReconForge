@@ -1,0 +1,1 @@
+"""Integration tests (Kali-only, requires real tools)."""
