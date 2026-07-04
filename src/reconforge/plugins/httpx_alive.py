@@ -2,16 +2,18 @@
 
 Responsibilities:
 - Check which hosts respond to HTTP/HTTPS
-- Parse httpx output for alive URLs
+- Parse httpx JSON output for alive URLs
 
 Design:
 - Calls httpx via subprocess.run with stdin input
-- Uses -silent flag for clean output
+- Uses -json flag for structured output
+- Falls back to plain text parsing for backward compatibility
 - Mocked in unit tests, real tool in integration tests
 """
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import time
@@ -83,10 +85,9 @@ class HttpxAlivePlugin(BasePlugin):
             )
 
         try:
-            # Pass IPs via stdin to httpx
             input_data = "\n".join(ips)
             proc = subprocess.run(
-                ["httpx", "-silent"],
+                ["httpx", "-json"],
                 input=input_data,
                 capture_output=True,
                 text=True,
@@ -101,9 +102,18 @@ class HttpxAlivePlugin(BasePlugin):
                     duration=timedelta(seconds=time.perf_counter() - start),
                 )
 
-            alive_urls = [
-                line.strip() for line in proc.stdout.splitlines() if line.strip()
-            ]
+            alive_urls: list[str] = []
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    url = data.get("url", "")
+                    if url:
+                        alive_urls.append(url)
+                except json.JSONDecodeError:
+                    alive_urls.append(line)
 
             return create_success_result(
                 module=self.name,

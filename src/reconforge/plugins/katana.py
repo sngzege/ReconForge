@@ -5,7 +5,8 @@ Responsibilities:
 - Extract paths from HTML responses
 
 Design:
-- Calls katana via subprocess.run with -u and silent flags
+- Calls katana via subprocess.run with stdin input
+- Katana reads URLs from stdin natively
 - Consumes httpx_alive upstream results (alive URLs)
 - Mocked in unit tests, real tool in integration tests
 """
@@ -26,7 +27,7 @@ class KatanaPlugin(BasePlugin):
     """Crawl alive web hosts using katana to discover endpoints.
 
     Katana is a fast web crawler written in Go. This plugin feeds
-    alive URLs into katana and collects discovered paths/links.
+    alive URLs into katana via stdin and collects discovered paths/links.
     """
 
     requires: ClassVar[list[str]] = ["httpx_alive"]
@@ -85,7 +86,7 @@ class KatanaPlugin(BasePlugin):
         try:
             input_data = "\n".join(urls)
             proc = subprocess.run(
-                ["katana", "-u", "-silent"],
+                ["katana"],
                 input=input_data,
                 capture_output=True,
                 text=True,

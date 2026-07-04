@@ -153,3 +153,44 @@ class TestCrtshPlugin:
 
         assert result.is_success
         assert len(result.data) == 2
+
+    def test_retry_on_502_then_success(self) -> None:
+        """Should retry on 502 and succeed on subsequent attempt."""
+        plugin = CrtshPlugin()
+        upstream = {"normalize_url": _make_normalize_result("example.com")}
+
+        success_response = MagicMock()
+        success_response.status = 200
+        success_response.read.return_value = json.dumps(
+            [{"name_value": "sub1.example.com"}]
+        ).encode()
+        success_response.__enter__ = MagicMock(return_value=success_response)
+        success_response.__exit__ = MagicMock(return_value=False)
+
+        from urllib.error import HTTPError
+
+        failure = HTTPError("", 502, "Bad Gateway", {}, None)
+
+        mock_urlopen = MagicMock()
+        mock_urlopen.side_effect = [failure, failure, success_response]
+
+        with patch("urllib.request.urlopen", mock_urlopen):
+            result = plugin.run("example.com", upstream)
+
+        assert result.is_success
+        assert "sub1.example.com" in result.data
+
+    def test_retry_exhausted_on_persistent_502(self) -> None:
+        """Should fail after exhausting retries on persistent 502."""
+        plugin = CrtshPlugin()
+        upstream = {"normalize_url": _make_normalize_result("example.com")}
+
+        from urllib.error import HTTPError
+
+        failure = HTTPError("", 502, "Bad Gateway", {}, None)
+
+        with patch("urllib.request.urlopen", side_effect=failure):
+            result = plugin.run("example.com", upstream)
+
+        assert result.is_failure
+        assert "502" in result.errors[0]

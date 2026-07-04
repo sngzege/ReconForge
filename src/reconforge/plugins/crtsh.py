@@ -3,10 +3,12 @@
 Responsibilities:
 - Discover subdomains via crt.sh certificate transparency logs
 - Parse JSON response from crt.sh API
+- Retry transient HTTP errors (502, 503, 504) with backoff
 
 Design:
 - Uses urllib.request for HTTP (no external dependencies)
 - Queries https://crt.sh/?q=<domain>&output=json
+- Retries up to 3 times on server errors with exponential backoff
 - Deduplicates results
 """
 
@@ -22,12 +24,17 @@ from typing import ClassVar
 from reconforge.core.plugin import BasePlugin
 from reconforge.core.result import Result, create_failure_result, create_success_result
 
+_RETRYABLE_HTTP_CODES = {502, 503, 504}
+_RETRY_COUNT = 3
+_RETRY_BASE_DELAY = 1.0
+
 
 class CrtshPlugin(BasePlugin):
     """Discover subdomains via crt.sh certificate transparency.
 
     Queries the crt.sh API for certificate transparency logs
-    associated with the target domain.
+    associated with the target domain. Retries transient server
+    errors automatically.
     """
 
     requires: ClassVar[list[str]] = ["normalize_url"]
@@ -41,6 +48,40 @@ class CrtshPlugin(BasePlugin):
     def description(self) -> str:
         """Return the plugin description."""
         return "Discover subdomains via crt.sh certificate transparency"
+
+    def _fetch(self, url: str) -> str:
+        """Fetch JSON data from crt.sh with retry logic.
+
+        Args:
+            url: Full crt.sh API URL.
+
+        Returns:
+            Raw JSON string from the response body.
+
+        Raises:
+            urllib.error.HTTPError: On non-retryable HTTP errors or after retries exhausted.
+            urllib.error.URLError: On connection errors or after retries exhausted.
+        """
+        last_error: Exception | None = None
+        for attempt in range(_RETRY_COUNT):
+            try:
+                request = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "ReconForge/1.0"},
+                )
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    return response.read().decode()
+            except urllib.error.HTTPError as e:
+                last_error = e
+                if e.code not in _RETRYABLE_HTTP_CODES or attempt >= _RETRY_COUNT - 1:
+                    raise
+                time.sleep(_RETRY_BASE_DELAY * (2 ** attempt))
+            except urllib.error.URLError as e:
+                last_error = e
+                if attempt >= _RETRY_COUNT - 1:
+                    raise
+                time.sleep(_RETRY_BASE_DELAY * (2 ** attempt))
+        raise last_error  # type: ignore[misc]
 
     def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
         """Query crt.sh for subdomains.
@@ -66,15 +107,9 @@ class CrtshPlugin(BasePlugin):
         url = f"https://crt.sh/?q={domain}&output=json"
 
         try:
-            request = urllib.request.Request(
-                url,
-                headers={"User-Agent": "ReconForge/1.0"},
-            )
+            raw = self._fetch(url)
+            data = json.loads(raw)
 
-            with urllib.request.urlopen(request, timeout=60) as response:
-                data = json.loads(response.read().decode())
-
-            # Extract and deduplicate subdomains
             subdomains: set[str] = set()
             for entry in data:
                 name_value = entry.get("name_value", "")

@@ -86,7 +86,7 @@ class HttpFingerprintPlugin(BasePlugin):
         try:
             input_data = "\n".join(urls)
             proc = subprocess.run(
-                ["httpx", "-json", "-silent"],
+                ["httpx", "-json"],
                 input=input_data,
                 capture_output=True,
                 text=True,

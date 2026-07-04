@@ -95,7 +95,7 @@ class TechDetectPlugin(BasePlugin):
         try:
             input_data = "\n".join(urls)
             proc = subprocess.run(
-                ["httpx", "-tech-detect", "-json", "-silent"],
+                ["httpx", "-tech-detect", "-json"],
                 input=input_data,
                 capture_output=True,
                 text=True,

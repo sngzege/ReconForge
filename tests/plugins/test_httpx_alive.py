@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
@@ -40,6 +41,30 @@ class TestHttpxAlivePlugin:
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "https://example.com\nhttp://example.com\n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = plugin.run("example.com", upstream)
+
+        assert result.is_success
+        assert "https://example.com" in result.data
+        assert "http://example.com" in result.data
+
+    def test_json_output(self) -> None:
+        """Should parse httpx JSON output into alive URL list."""
+        plugin = HttpxAlivePlugin()
+        upstream = {"dns_resolver": _make_dns_result(["93.184.216.34"])}
+
+        json_lines = "\n".join(
+            [
+                json.dumps({"url": "https://example.com", "status_code": 200}),
+                json.dumps({"url": "http://example.com", "status_code": 301}),
+            ]
+        )
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json_lines + "\n"
         mock_result.stderr = ""
 
         with patch("subprocess.run", return_value=mock_result):
