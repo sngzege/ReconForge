@@ -1,12 +1,12 @@
-"""Assetfinder plugin for ReconForge.
+"""Subfinder plugin for ReconForge.
 
 Responsibilities:
-- Discover subdomains using the assetfinder tool
-- Parse assetfinder output into structured data
+- Discover subdomains using the subfinder tool
+- Parse subfinder output into structured data
 
 Design:
-- Calls assetfinder via subprocess.run
-- Uses --subs-only flag for subdomain-only output
+- Calls subfinder via subprocess.run
+- Uses -silent flag for clean output (one subdomain per line)
 - Mocked in unit tests, real tool in integration tests
 """
 
@@ -22,11 +22,11 @@ from reconforge.core.plugin import BasePlugin
 from reconforge.core.result import Result, create_failure_result, create_success_result
 
 
-class AssetfinderPlugin(BasePlugin):
-    """Discover subdomains using the assetfinder tool.
+class SubfinderPlugin(BasePlugin):
+    """Discover subdomains using the subfinder tool.
 
-    Assetfinder finds assets associated with a target using
-    multiple online sources.
+    Subfinder is a passive subdomain enumeration tool that queries
+    multiple online sources for subdomains.
     """
 
     requires: ClassVar[list[str]] = ["normalize_url"]
@@ -34,27 +34,27 @@ class AssetfinderPlugin(BasePlugin):
     @property
     def name(self) -> str:
         """Return the plugin name."""
-        return "assetfinder"
+        return "subfinder"
 
     @property
     def description(self) -> str:
         """Return the plugin description."""
-        return "Discover subdomains using assetfinder"
+        return "Discover subdomains using subfinder"
 
     def setup(self, **kwargs: object) -> None:
-        """Check if assetfinder is installed.
+        """Check if subfinder is installed.
 
         Raises:
-            RuntimeError: If assetfinder is not found in PATH.
+            RuntimeError: If subfinder is not found in PATH.
         """
-        if shutil.which("assetfinder") is None:
+        if shutil.which("subfinder") is None:
             raise RuntimeError(
-                "assetfinder is not installed or not in PATH. "
-                "Install from: https://github.com/tomnomnom/assetfinder"
+                "subfinder is not installed or not in PATH. "
+                "Install from: https://github.com/projectdiscovery/subfinder"
             )
 
     def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
-        """Run assetfinder on the target domain.
+        """Run subfinder on the target domain.
 
         Args:
             target: Original target (unused, read from upstream).
@@ -66,6 +66,13 @@ class AssetfinderPlugin(BasePlugin):
         start = time.perf_counter()
 
         # Get normalized domain from upstream
+        if "normalize_url" not in upstream_results:
+            return create_failure_result(
+                module=self.name,
+                error="normalize_url result not available in upstream_results",
+                duration=timedelta(seconds=time.perf_counter() - start),
+            )
+
         normalize_result = upstream_results["normalize_url"]
         if not normalize_result.is_success:
             return create_failure_result(
@@ -78,7 +85,7 @@ class AssetfinderPlugin(BasePlugin):
 
         try:
             proc = subprocess.run(
-                ["assetfinder", "--subs-only", domain],
+                ["subfinder", "-d", domain, "-silent"],
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -87,13 +94,15 @@ class AssetfinderPlugin(BasePlugin):
             if proc.returncode != 0:
                 return create_failure_result(
                     module=self.name,
-                    error=f"assetfinder failed (exit {proc.returncode}): {proc.stderr.strip()}",
+                    error=f"subfinder failed (exit {proc.returncode}): {proc.stderr.strip()}",
                     duration=timedelta(seconds=time.perf_counter() - start),
                 )
 
             # Parse output: one subdomain per line
             subdomains = [
-                line.strip() for line in proc.stdout.splitlines() if line.strip()
+                line.strip()
+                for line in proc.stdout.splitlines()
+                if line.strip()
             ]
 
             return create_success_result(
@@ -106,12 +115,12 @@ class AssetfinderPlugin(BasePlugin):
         except FileNotFoundError:
             return create_failure_result(
                 module=self.name,
-                error="assetfinder is not installed or not in PATH",
+                error="subfinder is not installed or not in PATH",
                 duration=timedelta(seconds=time.perf_counter() - start),
             )
         except subprocess.TimeoutExpired:
             return create_failure_result(
                 module=self.name,
-                error="assetfinder timed out after 300 seconds",
+                error="subfinder timed out after 300 seconds",
                 duration=timedelta(seconds=time.perf_counter() - start),
             )

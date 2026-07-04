@@ -1,12 +1,12 @@
-"""Assetfinder plugin for ReconForge.
+"""Katana web crawler plugin for ReconForge.
 
 Responsibilities:
-- Discover subdomains using the assetfinder tool
-- Parse assetfinder output into structured data
+- Crawl alive web hosts to discover endpoints and links
+- Extract paths from HTML responses
 
 Design:
-- Calls assetfinder via subprocess.run
-- Uses --subs-only flag for subdomain-only output
+- Calls katana via subprocess.run with -u and silent flags
+- Consumes httpx_alive upstream results (alive URLs)
 - Mocked in unit tests, real tool in integration tests
 """
 
@@ -22,96 +22,103 @@ from reconforge.core.plugin import BasePlugin
 from reconforge.core.result import Result, create_failure_result, create_success_result
 
 
-class AssetfinderPlugin(BasePlugin):
-    """Discover subdomains using the assetfinder tool.
+class KatanaPlugin(BasePlugin):
+    """Crawl alive web hosts using katana to discover endpoints.
 
-    Assetfinder finds assets associated with a target using
-    multiple online sources.
+    Katana is a fast web crawler written in Go. This plugin feeds
+    alive URLs into katana and collects discovered paths/links.
     """
 
-    requires: ClassVar[list[str]] = ["normalize_url"]
+    requires: ClassVar[list[str]] = ["httpx_alive"]
 
     @property
     def name(self) -> str:
         """Return the plugin name."""
-        return "assetfinder"
+        return "katana"
 
     @property
     def description(self) -> str:
         """Return the plugin description."""
-        return "Discover subdomains using assetfinder"
+        return "Crawl web hosts to discover endpoints with katana"
 
     def setup(self, **kwargs: object) -> None:
-        """Check if assetfinder is installed.
+        """Check if katana is installed.
 
         Raises:
-            RuntimeError: If assetfinder is not found in PATH.
+            RuntimeError: If katana is not found in PATH.
         """
-        if shutil.which("assetfinder") is None:
+        if shutil.which("katana") is None:
             raise RuntimeError(
-                "assetfinder is not installed or not in PATH. "
-                "Install from: https://github.com/tomnomnom/assetfinder"
+                "katana is not installed or not in PATH. "
+                "Install from: https://github.com/projectdiscovery/katana"
             )
 
     def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
-        """Run assetfinder on the target domain.
+        """Run katana to crawl alive hosts.
 
         Args:
             target: Original target (unused, read from upstream).
-            upstream_results: Must contain "normalize_url" result.
+            upstream_results: Must contain "httpx_alive" result.
 
         Returns:
-            Result with list of subdomains in data field.
+            Result with list of endpoint URL strings in data field.
         """
         start = time.perf_counter()
 
-        # Get normalized domain from upstream
-        normalize_result = upstream_results["normalize_url"]
-        if not normalize_result.is_success:
+        httpx_result = upstream_results["httpx_alive"]
+        if not httpx_result.is_success:
             return create_failure_result(
                 module=self.name,
-                error=f"normalize_url failed: {normalize_result.errors}",
+                error=f"httpx_alive failed: {httpx_result.errors}",
                 duration=timedelta(seconds=time.perf_counter() - start),
             )
 
-        domain = normalize_result.data
+        urls = httpx_result.data
+        if not urls:
+            return create_success_result(
+                module=self.name,
+                data=[],
+                duration=timedelta(seconds=time.perf_counter() - start),
+                metadata={"count": 0},
+            )
 
         try:
+            input_data = "\n".join(urls)
             proc = subprocess.run(
-                ["assetfinder", "--subs-only", domain],
+                ["katana", "-u", "-silent"],
+                input=input_data,
                 capture_output=True,
                 text=True,
                 timeout=300,
             )
 
-            if proc.returncode != 0:
+            if proc.returncode != 0 and not proc.stdout:
+                stderr = proc.stderr.strip()
                 return create_failure_result(
                     module=self.name,
-                    error=f"assetfinder failed (exit {proc.returncode}): {proc.stderr.strip()}",
+                    error=f"katana failed (exit {proc.returncode}): {stderr}",
                     duration=timedelta(seconds=time.perf_counter() - start),
                 )
 
-            # Parse output: one subdomain per line
-            subdomains = [
+            endpoints = [
                 line.strip() for line in proc.stdout.splitlines() if line.strip()
             ]
 
             return create_success_result(
                 module=self.name,
-                data=subdomains,
+                data=endpoints,
                 duration=timedelta(seconds=time.perf_counter() - start),
-                metadata={"domain": domain, "count": len(subdomains)},
+                metadata={"count": len(endpoints)},
             )
-
         except FileNotFoundError:
             return create_failure_result(
                 module=self.name,
-                error="assetfinder is not installed or not in PATH",
+                error="katana is not installed or not in PATH",
                 duration=timedelta(seconds=time.perf_counter() - start),
             )
         except subprocess.TimeoutExpired:
             return create_failure_result(
                 module=self.name,
-                error="assetfinder timed out after 300 seconds",
+                error="katana timed out after 300 seconds",
                 duration=timedelta(seconds=time.perf_counter() - start),
             )

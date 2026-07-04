@@ -46,7 +46,11 @@ class TestSubfinderPlugin:
             result = plugin.run("example.com", upstream)
 
         assert result.is_success
-        assert result.data == ["sub1.example.com", "sub2.example.com", "api.example.com"]
+        assert result.data == [
+            "sub1.example.com",
+            "sub2.example.com",
+            "api.example.com",
+        ]
         mock_run.assert_called_once()
 
     def test_tool_not_found(self) -> None:
@@ -54,11 +58,16 @@ class TestSubfinderPlugin:
         plugin = SubfinderPlugin()
         upstream = {"normalize_url": _make_normalize_result("example.com")}
 
-        with patch("subprocess.run", side_effect=FileNotFoundError("subfinder not found")):
+        with patch(
+            "subprocess.run", side_effect=FileNotFoundError("subfinder not found")
+        ):
             result = plugin.run("example.com", upstream)
 
         assert result.is_failure
-        assert "not found" in result.errors[0].lower() or "not installed" in result.errors[0].lower()
+        assert (
+            "not found" in result.errors[0].lower()
+            or "not installed" in result.errors[0].lower()
+        )
 
     def test_tool_error(self) -> None:
         """Should return failure if subfinder returns non-zero exit code."""
@@ -79,11 +88,16 @@ class TestSubfinderPlugin:
         plugin = SubfinderPlugin()
         upstream = {"normalize_url": _make_normalize_result("example.com")}
 
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("subfinder", 300)):
+        with patch(
+            "subprocess.run", side_effect=subprocess.TimeoutExpired("subfinder", 300)
+        ):
             result = plugin.run("example.com", upstream)
 
         assert result.is_failure
-        assert "timed out" in result.errors[0].lower() or "timeout" in result.errors[0].lower()
+        assert (
+            "timed out" in result.errors[0].lower()
+            or "timeout" in result.errors[0].lower()
+        )
 
     def test_empty_output(self) -> None:
         """Should return success with empty list if no subdomains found."""

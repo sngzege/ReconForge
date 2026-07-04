@@ -77,7 +77,9 @@ class TestAssetfinderPlugin:
         plugin = AssetfinderPlugin()
         upstream = {"normalize_url": _make_normalize_result("example.com")}
 
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("assetfinder", 300)):
+        with patch(
+            "subprocess.run", side_effect=subprocess.TimeoutExpired("assetfinder", 300)
+        ):
             result = plugin.run("example.com", upstream)
 
         assert result.is_failure

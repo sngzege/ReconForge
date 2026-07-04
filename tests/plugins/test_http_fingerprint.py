@@ -37,12 +37,14 @@ class TestHttpFingerprintPlugin:
         plugin = HttpFingerprintPlugin()
         upstream = {"httpx_alive": _make_httpx_result(["https://example.com"])}
 
-        json_output = json.dumps({
-            "url": "https://example.com",
-            "status_code": 200,
-            "webserver": "nginx",
-            "title": "Example Domain",
-        })
+        json_output = json.dumps(
+            {
+                "url": "https://example.com",
+                "status_code": 200,
+                "webserver": "nginx",
+                "title": "Example Domain",
+            }
+        )
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -80,13 +82,18 @@ class TestHttpFingerprintPlugin:
     def test_multiple_urls(self) -> None:
         """Should fingerprint multiple URLs."""
         plugin = HttpFingerprintPlugin()
-        upstream = {"httpx_alive":
-                    _make_httpx_result(["https://example.com", "https://api.example.com"])}
+        upstream = {
+            "httpx_alive": _make_httpx_result(
+                ["https://example.com", "https://api.example.com"]
+            )
+        }
 
-        json_lines = "\n".join([
-            json.dumps({"url": "https://example.com", "status_code": 200}),
-            json.dumps({"url": "https://api.example.com", "status_code": 301}),
-        ])
+        json_lines = "\n".join(
+            [
+                json.dumps({"url": "https://example.com", "status_code": 200}),
+                json.dumps({"url": "https://api.example.com", "status_code": 301}),
+            ]
+        )
 
         mock_result = MagicMock()
         mock_result.returncode = 0

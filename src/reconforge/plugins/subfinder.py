@@ -93,9 +93,7 @@ class SubfinderPlugin(BasePlugin):
 
             # Parse output: one subdomain per line
             subdomains = [
-                line.strip()
-                for line in proc.stdout.splitlines()
-                if line.strip()
+                line.strip() for line in proc.stdout.splitlines() if line.strip()
             ]
 
             return create_success_result(

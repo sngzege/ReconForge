@@ -39,11 +39,13 @@ class TestCrtshPlugin:
 
         mock_response = MagicMock()
         mock_response.status = 200
-        mock_response.read.return_value = json.dumps([
-            {"name_value": "sub1.example.com"},
-            {"name_value": "sub2.example.com"},
-            {"name_value": "*.example.com"},
-        ]).encode()
+        mock_response.read.return_value = json.dumps(
+            [
+                {"name_value": "sub1.example.com"},
+                {"name_value": "sub2.example.com"},
+                {"name_value": "*.example.com"},
+            ]
+        ).encode()
 
         mock_urlopen = MagicMock()
         mock_urlopen.return_value.__enter__ = MagicMock(return_value=mock_response)
@@ -63,9 +65,11 @@ class TestCrtshPlugin:
 
         mock_response = MagicMock()
         mock_response.status = 200
-        mock_response.read.return_value = json.dumps([
-            {"name_value": "*.example.com"},
-        ]).encode()
+        mock_response.read.return_value = json.dumps(
+            [
+                {"name_value": "*.example.com"},
+            ]
+        ).encode()
 
         mock_urlopen = MagicMock()
         mock_urlopen.return_value.__enter__ = MagicMock(return_value=mock_response)
@@ -83,7 +87,11 @@ class TestCrtshPlugin:
         upstream = {"normalize_url": _make_normalize_result("example.com")}
 
         from urllib.error import HTTPError
-        with patch("urllib.request.urlopen", side_effect=HTTPError("", 500, "Server Error", {}, None)):
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=HTTPError("", 500, "Server Error", {}, None),
+        ):
             result = plugin.run("example.com", upstream)
 
         assert result.is_failure
@@ -94,7 +102,10 @@ class TestCrtshPlugin:
         upstream = {"normalize_url": _make_normalize_result("example.com")}
 
         import urllib.error
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("timeout")):
+
+        with patch(
+            "urllib.request.urlopen", side_effect=urllib.error.URLError("timeout")
+        ):
             result = plugin.run("example.com", upstream)
 
         assert result.is_failure
@@ -125,11 +136,13 @@ class TestCrtshPlugin:
 
         mock_response = MagicMock()
         mock_response.status = 200
-        mock_response.read.return_value = json.dumps([
-            {"name_value": "sub1.example.com"},
-            {"name_value": "sub1.example.com"},
-            {"name_value": "sub2.example.com"},
-        ]).encode()
+        mock_response.read.return_value = json.dumps(
+            [
+                {"name_value": "sub1.example.com"},
+                {"name_value": "sub1.example.com"},
+                {"name_value": "sub2.example.com"},
+            ]
+        ).encode()
 
         mock_urlopen = MagicMock()
         mock_urlopen.return_value.__enter__ = MagicMock(return_value=mock_response)

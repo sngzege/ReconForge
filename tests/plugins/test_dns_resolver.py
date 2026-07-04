@@ -37,9 +37,11 @@ class TestDnsResolverPlugin:
         plugin = DnsResolverPlugin()
         upstream = {"normalize_url": _make_normalize_result("example.com")}
 
-        mock_getaddrinfo = MagicMock(return_value=[
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
-        ])
+        mock_getaddrinfo = MagicMock(
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+            ]
+        )
 
         with patch("socket.getaddrinfo", mock_getaddrinfo):
             result = plugin.run("example.com", upstream)
@@ -93,10 +95,12 @@ class TestDnsResolverPlugin:
         plugin = DnsResolverPlugin()
         upstream = {"normalize_url": _make_normalize_result("example.com")}
 
-        mock_getaddrinfo = MagicMock(return_value=[
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:2800:220:1::1", 0)),
-        ])
+        mock_getaddrinfo = MagicMock(
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:2800:220:1::1", 0)),
+            ]
+        )
 
         with patch("socket.getaddrinfo", mock_getaddrinfo):
             result = plugin.run("example.com", upstream)
