@@ -1,16 +1,8 @@
 """Command-line interface for ReconForge.
 
-Responsibilities:
-- Parse command-line arguments
-- Dispatch to appropriate commands (scan, discovery, list-plugins, etc.)
-- Handle errors gracefully
-- Provide helpful help messages
-
-Design:
-- Uses argparse for argument parsing
-- Subcommands for different operations
-- Integrates with Config, Logging, Pipeline, and Plugin Loader
-- Returns appropriate exit codes
+Simple CLI for discovery reconnaissance:
+- reconforge scan <target> - Run full discovery scan
+- reconforge --help - Show help
 """
 
 from __future__ import annotations
@@ -18,410 +10,288 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any
-
-from collections import defaultdict
 
 from reconforge.core.config import Config, ConfigError, load_config
 from reconforge.core.logging_setup import setup_logging
 from reconforge.core.pipeline import Pipeline
-from reconforge.core.plugin import BasePlugin
+from reconforge.core.loader import load_plugins
 from reconforge.reporting.reporter import Reporter
 
 
-# Discovery-phase plugin names: plugins that perform initial reconnaissance
-DISCOVERY_PLUGINS = [
-    "normalize_url",
-    "dns_resolver",
-    "subfinder",
-    "crtsh",
-    "assetfinder",
-    "wayback",
-    "whois_lookup",
-    "httpx_alive",
-    "naabu",
-    "merge_engine",
-]
-
-
-def _topo_sort(requires: dict[str, list[str]], names: list[str]) -> list[str]:
-    """Topological sort of plugin names by their requires dependencies.
-
-    Args:
-        requires: Mapping of plugin name -> list of required upstream plugin names.
-        names: Ordered list of plugin names to sort.
-
-    Returns:
-        Plugin names in dependency-safe order.
-    """
-    in_degree: dict[str, int] = {n: 0 for n in names}
-    dependents: dict[str, list[str]] = defaultdict(list)
-
-    name_set = set(names)
-    for name in names:
-        for dep in requires.get(name, []):
-            if dep in name_set:
-                in_degree[name] += 1
-                dependents[dep].append(name)
-
-    queue = [n for n, d in in_degree.items() if d == 0]
-    result: list[str] = []
-
-    while queue:
-        result.extend(queue)
-        next_queue: list[str] = []
-        for n in queue:
-            for dep in dependents[n]:
-                in_degree[dep] -= 1
-                if in_degree[dep] == 0:
-                    next_queue.append(dep)
-        queue = next_queue
-
-    return result
-
-
-def create_parser() -> argparse.ArgumentParser:
-    """Create the argument parser for ReconForge CLI.
-
-    Returns:
-        Configured ArgumentParser instance.
-    """
-    parser = argparse.ArgumentParser(
-        prog="reconforge",
-        description="ReconForge - A modular reconnaissance framework",
-        epilog="For more information, visit: https://github.com/yourusername/reconforge",
-    )
-
-    parser.add_argument(
-        "--version",
-        action="version",
-        version="%(prog)s 0.1.0",
-    )
-
-    parser.add_argument(
-        "--config",
-        type=Path,
-        help="Path to configuration file (default: reconforge.toml)",
-    )
-
-    parser.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Override log level from config",
-    )
-
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        help="Override output directory from config",
-    )
-
-    subparsers = parser.add_subparsers(
-        dest="command",
-        title="commands",
-        description="Available commands",
-    )
-
-    # scan command
-    scan_parser = subparsers.add_parser(
-        "scan",
-        help="Run full reconnaissance scan on a target",
-    )
-    scan_parser.add_argument(
-        "target",
-        help="Target to scan (domain, URL, or IP)",
-    )
-    scan_parser.add_argument(
-        "--plugins",
-        nargs="+",
-        help="Specific plugins to run (default: all)",
-    )
-    scan_parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=10,
-        help="Maximum concurrent workers (default: 10)",
-    )
-
-    # discovery command
-    disc_parser = subparsers.add_parser(
-        "discovery",
-        help="Run discovery stage only - enumerate subdomains, ports, and services",
-    )
-    disc_parser.add_argument(
-        "target",
-        help="Target to discover (domain, URL, or IP)",
-    )
-    disc_parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=10,
-        help="Maximum concurrent workers (default: 10)",
-    )
-
-    # list-plugins command
-    subparsers.add_parser(
-        "list-plugins",
-        help="List all available plugins",
-    )
-
-    # validate-config command
-    subparsers.add_parser(
-        "validate-config",
-        help="Validate configuration file",
-    )
-
-    return parser
-
-
 def cmd_scan(args: argparse.Namespace, config: Config) -> int:
-    """Execute the scan command.
-
-    Args:
-        args: Parsed command-line arguments.
-        config: Configuration object.
-
-    Returns:
-        Exit code (0 for success, 1 for error).
-    """
-    logger = setup_logging(config, log_dir=Path(config.output_dir) / "logs")
-
-    try:
-        # Load plugins
-        from reconforge.core.loader import load_plugins
-
-        plugin_dir = Path(__file__).parent / "plugins"
-        registry = load_plugins(plugin_dir)
-
-        if len(registry) == 0:
-            print("[!] No plugins found.")
-            return 0
-
-        # Filter plugins if specified
-        plugin_names = args.plugins if args.plugins else registry.get_names()
-
-        # Collect requires for topological sort and pipeline wiring
-        plugin_requires: dict[str, list[str]] = {}
-        for name in plugin_names:
-            if registry.has(name):
-                plugin = registry.get(name)
-                plugin_requires[name] = list(plugin.requires)
-
-        sorted_names = _topo_sort(plugin_requires, plugin_names)
-
-        # Build pipeline
-        pipeline = Pipeline(max_workers=args.max_workers)
-
-        for name in sorted_names:
-            if registry.has(name):
-                plugin = registry.get(name)
-                deps = plugin_requires.get(name, [])
-                pipeline.add_plugin(plugin, depends_on=deps)
-
-        # Run pipeline
-        print(f"[*] Scanning: {args.target}")
-        result = pipeline.run(args.target)
-
-        # Brief summary
-        print(f"[+] Done in {result.duration.total_seconds():.1f}s "
-              f"| {result.success_count} ok, {result.failure_count} failed")
-
-        # Write report with target name
-        try:
-            reporter = Reporter(output_dir=config.output_dir)
-            report_paths = reporter.write(result, target=args.target)
-            report_path = report_paths.get("md", report_paths.get("markdown"))
-            if report_path:
-                print(f"[+] Report: {report_path}")
-        except Exception as e:
-            logger.warning(f"Failed to write report: {e}")
-
-        return 0
-
-    except Exception as e:
-        logger.error(f"Scan failed: {e}")
-        print(f"[!] Error: {e}", file=sys.stderr)
-        return 1
-
-
-def cmd_discovery(args: argparse.Namespace, config: Config) -> int:
-    """Execute the discovery command - enumerate subdomains, ports, services.
-
-    Only runs discovery-phase plugins. Skips tools that are not installed.
-
-    Args:
-        args: Parsed command-line arguments.
-        config: Configuration object.
-
-    Returns:
-        Exit code (0 for success, 1 for error).
-    """
-    logger = setup_logging(config, log_dir=Path(config.output_dir) / "logs")
-
-    try:
-        from reconforge.core.loader import load_plugins
-
-        plugin_dir = Path(__file__).parent / "plugins"
-        registry = load_plugins(plugin_dir)
-
-        # Only use discovery plugins that are available
-        available = [p for p in DISCOVERY_PLUGINS if registry.has(p)]
-        skipped = [p for p in DISCOVERY_PLUGINS if not registry.has(p)]
-
-        if skipped:
-            logger.debug(f"Skipping unavailable plugins: {skipped}")
-
-        if not available:
-            print("[!] No discovery plugins found.")
-            return 1
-
-        # Collect requires for topological sort
-        plugin_requires: dict[str, list[str]] = {}
-        for name in available:
-            plugin = registry.get(name)
-            plugin_requires[name] = list(plugin.requires)
-
-        sorted_names = _topo_sort(plugin_requires, available)
-
-        # Build pipeline
-        pipeline = Pipeline(max_workers=args.max_workers)
-
-        for name in sorted_names:
-            if registry.has(name):
-                plugin = registry.get(name)
-                deps = plugin_requires.get(name, [])
-                pipeline.add_plugin(plugin, depends_on=deps)
-
-        # Run pipeline
-        print(f"[*] Discovery: {args.target}")
-        result = pipeline.run(args.target)
-
-        # Brief summary
-        print(f"[+] Done in {result.duration.total_seconds():.1f}s "
-              f"| {result.success_count} ok, {result.failure_count} failed")
-
-        # Write report with target name
-        try:
-            reporter = Reporter(output_dir=config.output_dir)
-            report_paths = reporter.write(result, target=args.target)
-            report_path = report_paths.get("md", report_paths.get("markdown"))
-            if report_path:
-                print(f"[+] Report: {report_path}")
-        except Exception as e:
-            logger.warning(f"Failed to write report: {e}")
-
-        return 0
-
-    except Exception as e:
-        logger.error(f"Discovery failed: {e}")
-        print(f"[!] Error: {e}", file=sys.stderr)
-        return 1
-
-
-def cmd_list_plugins(args: argparse.Namespace, config: Config) -> int:
-    """Execute the list-plugins command.
-
-    Args:
-        args: Parsed command-line arguments.
-        config: Configuration object.
-
-    Returns:
-        Exit code (0 for success, 1 for error).
-    """
+    """Run discovery scan on target."""
     setup_logging(config)
-
-    try:
-        from reconforge.core.loader import load_plugins
-
-        plugin_dir = Path(__file__).parent / "plugins"
-        registry = load_plugins(plugin_dir)
-
-        if len(registry) == 0:
-            print("No plugins found.")
-            print(f"Create plugins in: {plugin_dir}")
-            return 0
-
-        print(f"Available plugins ({len(registry)}):\n")
-        for plugin in registry.get_all():
-            print(f"  {plugin.name}")
-            print(f"    Version: {plugin.version}")
-            print(f"    Description: {plugin.description}")
-            if plugin.requires:
-                print(f"    Requires: {', '.join(plugin.requires)}")
-            print()
-
-        return 0
-
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+    
+    target = args.target
+    print(f"\n[*] Starting ReconForge scan on: {target}\n")
+    
+    # Load plugins
+    plugin_dir = Path(__file__).parent / "plugins"
+    registry = load_plugins(plugin_dir)
+    
+    if len(registry) == 0:
+        print("[!] No plugins found.")
         return 1
-
-
-def cmd_validate_config(args: argparse.Namespace, config: Config) -> int:
-    """Execute the validate-config command.
-
-    Args:
-        args: Parsed command-line arguments.
-        config: Configuration object.
-
-    Returns:
-        Exit code (0 for success, 1 for error).
-    """
-    print("Configuration is valid!")
-    print(f"\nCurrent configuration:")
-    print(f"  thread_count: {config.thread_count}")
-    print(f"  timeout: {config.timeout}")
-    print(f"  retry_count: {config.retry_count}")
-    print(f"  cache_ttl: {config.cache_ttl}")
-    print(f"  log_level: {config.log_level}")
-    print(f"  output_dir: {config.output_dir}")
-    print(f"  rate_limit: {config.rate_limit}")
+    
+    # Build pipeline
+    pipeline = Pipeline(max_workers=config.thread_count)
+    
+    # Add plugins in dependency order
+    plugin_names = [
+        "normalize_url",
+        "dns_resolver",
+        "ssl_info",
+        "subdomain_scan",
+        "http_alive",
+        "port_scan",
+        "tech_scan",
+        "waf_detect",
+        "dir_brute",
+        "js_analyze",
+        "path_probe",
+    ]
+    
+    for name in plugin_names:
+        plugin = registry.get(name)
+        if plugin:
+            pipeline.add_plugin(plugin, depends_on=plugin.requires)
+    
+    # Run pipeline
+    print("[*] Running discovery pipeline...\n")
+    result = pipeline.run(target)
+    
+    # Print merged results to terminal
+    _print_merged_results(result)
+    
+    # Write reports
+    reporter = Reporter(config.output_dir)
+    paths = reporter.write(result, target)
+    
+    print(f"\n[*] Reports written to:")
+    for fmt, path in paths.items():
+        print(f"    {fmt}: {path}")
+    
     return 0
 
 
+def _print_merged_results(result) -> None:
+    """Print merged and meaningful results to terminal."""
+    print("=" * 70)
+    print("RECONFORGE DISCOVERY REPORT")
+    print("=" * 70)
+    
+    # Collect all data by category
+    target_info = {}
+    subdomains = []
+    alive_hosts = []
+    open_ports = []
+    technologies = []
+    waf_info = []
+    ssl_certs = []
+    discovered_paths = []
+    js_secrets = []
+    sensitive_paths = []
+    
+    for r in result.results:
+        if r.module == "normalize_url" and r.data:
+            target_info["domain"] = r.data
+            target_info["is_ip"] = r.metadata.get("is_ip", False)
+        elif r.module == "dns_resolver" and r.is_success and r.data:
+            target_info["ips"] = r.data
+        elif r.module == "subdomain_scan" and r.is_success and r.data:
+            subdomains = r.data
+        elif r.module == "http_alive" and r.is_success and r.data:
+            alive_hosts = r.data
+        elif r.module == "port_scan" and r.is_success and r.data:
+            open_ports = r.data
+        elif r.module == "tech_scan" and r.is_success and r.data:
+            technologies = r.data
+        elif r.module == "waf_detect" and r.is_success and r.data:
+            waf_info = r.data
+        elif r.module == "ssl_info" and r.is_success and r.data:
+            ssl_certs = r.data
+        elif r.module == "dir_brute" and r.is_success and r.data:
+            discovered_paths = r.data
+        elif r.module == "js_analyze" and r.is_success and r.data:
+            js_secrets = r.data
+        elif r.module == "path_probe" and r.is_success and r.data:
+            sensitive_paths = r.data
+    
+    # TARGET INFO
+    print("\n[TARGET INFO]")
+    if "domain" in target_info:
+        print(f"  Domain: {target_info['domain']}")
+    if "ips" in target_info:
+        print(f"  IPs: {', '.join(target_info['ips'])}")
+    
+    # SSL CERT
+    if ssl_certs:
+        print("\n[SSL CERTIFICATE]")
+        cert = ssl_certs[0]
+        print(f"  Subject: {cert.get('subject', '')}")
+        print(f"  Issuer: {cert.get('issuer', '')} ({cert.get('issuer_cn', '')})")
+        print(f"  Valid: {cert.get('not_before', '')} -> {cert.get('not_after', '')}")
+        sans = cert.get("sans", [])
+        if sans:
+            print(f"  SANs: {', '.join(sans[:10])}")
+            if len(sans) > 10:
+                print(f"  ... and {len(sans) - 10} more SANs")
+    
+    # SUBDOMAINS
+    if subdomains:
+        print(f"\n[SUBDOMAINS] ({len(subdomains)} found)")
+        for idx, sub in enumerate(subdomains[:20], 1):
+            print(f"  {idx}. {sub}")
+        if len(subdomains) > 20:
+            print(f"  ... and {len(subdomains) - 20} more")
+    
+    # ALIVE HOSTS
+    if alive_hosts:
+        print(f"\n[ALIVE HOSTS] ({len(alive_hosts)} responding)")
+        for idx, host in enumerate(alive_hosts[:15], 1):
+            print(f"  {idx}. [{host.get('status_code', 0)}] {host.get('url', '')} ({host.get('size', 0)} bytes)")
+        if len(alive_hosts) > 15:
+            print(f"  ... and {len(alive_hosts) - 15} more")
+    
+    # WAF
+    if waf_info:
+        print("\n[WAF DETECTION]")
+        for w in waf_info:
+            if w.get("waf_detected"):
+                print(f"  ⚠ WAF Detected: {w.get('waf_name', 'Unknown')}")
+            else:
+                print(f"  ✓ No WAF detected")
+    
+    # OPEN PORTS
+    if open_ports:
+        print(f"\n[OPEN PORTS] ({len(open_ports)} found)")
+        for idx, port_info in enumerate(open_ports[:20], 1):
+            host = port_info.get("host", "")
+            port = port_info.get("port", 0)
+            service = port_info.get("service", "")
+            product = port_info.get("product", "")
+            version = port_info.get("version", "")
+            line = f"  {idx}. {host}:{port}"
+            if service:
+                line += f" ({service}"
+                if product:
+                    line += f" - {product}"
+                    if version:
+                        line += f" {version}"
+                line += ")"
+            print(line)
+        if len(open_ports) > 20:
+            print(f"  ... and {len(open_ports) - 20} more")
+    
+    # TECHNOLOGIES
+    if technologies:
+        print(f"\n[TECHNOLOGIES] ({len(technologies)} detected)")
+        tech_by_type = {}
+        for tech in technologies:
+            tech_type = tech.get("type", "Unknown")
+            tech_value = tech.get("value", "")
+            if tech_type not in tech_by_type:
+                tech_by_type[tech_type] = []
+            if tech_value and tech_value != "detected":
+                tech_by_type[tech_type].append(tech_value)
+        for tech_type, values in sorted(tech_by_type.items()):
+            if values:
+                unique_vals = list(set(values))
+                print(f"  {tech_type}: {', '.join(unique_vals[:5])}")
+    
+    # DISCOVERED PATHS (dir_brute)
+    if discovered_paths:
+        print(f"\n[DISCOVERED PATHS] ({len(discovered_paths)} found)")
+        for idx, p in enumerate(discovered_paths[:20], 1):
+            print(f"  {idx}. [{p.get('status_code', 0)}] {p.get('url', '')} ({p.get('size', 0)} bytes)")
+        if len(discovered_paths) > 20:
+            print(f"  ... and {len(discovered_paths) - 20} more")
+    
+    # JS SECRETS
+    if js_secrets:
+        print(f"\n[JS SECRETS/ENDPOINTS] ({len(js_secrets)} found)")
+        for idx, s in enumerate(js_secrets[:20], 1):
+            print(f"  {idx}. [{s.get('type', '')}] {s.get('value', '')} (in {s.get('js_url', '')})")
+        if len(js_secrets) > 20:
+            print(f"  ... and {len(js_secrets) - 20} more")
+    
+    # SENSITIVE PATHS (path_probe)
+    if sensitive_paths:
+        print(f"\n[SENSITIVE PATHS] ({len(sensitive_paths)} found)")
+        for idx, p in enumerate(sensitive_paths[:20], 1):
+            print(f"  {idx}. [{p.get('status_code', 0)}] {p.get('url', '')} ({p.get('size', 0)} bytes)")
+        if len(sensitive_paths) > 20:
+            print(f"  ... and {len(sensitive_paths) - 20} more")
+    
+    # SUMMARY
+    print("\n" + "=" * 70)
+    print(f"Total duration: {result.duration.total_seconds():.2f}s")
+    print(f"Successful plugins: {result.success_count}/{len(result.results)}")
+    print("=" * 70)
+
+
+def create_parser() -> argparse.ArgumentParser:
+    """Create argument parser."""
+    parser = argparse.ArgumentParser(
+        prog="reconforge",
+        description="ReconForge - Simple discovery reconnaissance tool",
+    )
+    
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="%(prog)s 0.3.0",
+    )
+    
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="Path to config file (default: reconforge.toml)",
+    )
+    
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Output directory for reports",
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    
+    # Scan command
+    scan_parser = subparsers.add_parser("scan", help="Run discovery scan")
+    scan_parser.add_argument("target", help="Target domain, URL, or IP")
+    
+    return parser
+
+
 def main() -> None:
-    """Entry point for the reconforge CLI."""
+    """Entry point."""
     parser = create_parser()
     args = parser.parse_args()
-
+    
     if args.command is None:
         parser.print_help()
         sys.exit(0)
-
-    # Load configuration
+    
+    # Load config
     try:
         config = load_config(args.config)
     except ConfigError as e:
-        print(f"Configuration error: {e}", file=sys.stderr)
+        print(f"[!] Config error: {e}", file=sys.stderr)
         sys.exit(1)
-
+    
     # Apply CLI overrides
-    # Note: Config is immutable, so we create a new one with overrides
-    if args.log_level or args.output_dir:
+    if args.output_dir:
         from dataclasses import replace
-
-        overrides = {}
-        if args.log_level:
-            overrides["log_level"] = args.log_level
-        if args.output_dir:
-            overrides["output_dir"] = str(args.output_dir)
-        config = replace(config, **overrides)
-
-    # Dispatch to command handler
-    commands = {
-        "scan": cmd_scan,
-        "discovery": cmd_discovery,
-        "list-plugins": cmd_list_plugins,
-        "validate-config": cmd_validate_config,
-    }
-
-    handler = commands.get(args.command)
-    if handler is None:
+        config = replace(config, output_dir=str(args.output_dir))
+    
+    # Dispatch
+    if args.command == "scan":
+        exit_code = cmd_scan(args, config)
+        sys.exit(exit_code)
+    else:
         parser.print_help()
         sys.exit(1)
-
-    exit_code = handler(args, config)
-    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

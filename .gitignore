@@ -29,3 +29,7 @@ Thumbs.db
 # Project artifacts
 artifacts/
 output/
+
+# Tools/IDE
+.kilo/
+.superpowers/

@@ -123,8 +123,18 @@ class NormalizeUrlPlugin(BasePlugin):
         Returns:
             Hostname extracted from URL, or original value.
         """
+        # Remove trailing slashes
+        value = value.rstrip("/")
+        
         if "://" in value:
             parsed = urlparse(value)
             if parsed.hostname:
                 return parsed.hostname
+        
+        # If no protocol, try to parse as URL anyway to handle "example.com/"
+        if "/" in value:
+            parsed = urlparse(f"//{value}")
+            if parsed.hostname:
+                return parsed.hostname
+        
         return value

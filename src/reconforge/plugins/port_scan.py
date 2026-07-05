@@ -1,8 +1,14 @@
-"""Nmap service detection plugin for ReconForge.
+"""Port scanner plugin for ReconForge.
 
-Detect services and versions on open ports using nmap. Consumes naabu
-results and runs nmap service version detection (-sV, XML to stdout).
-Mocked in unit tests, real tool in integration tests.
+Responsibilities:
+- Scan top 1000 common ports using nmap
+- Detect open ports and basic service information
+- Run after DNS resolution
+
+Design:
+- Uses nmap with default port range (top 1000)
+- Returns list of open ports with service info
+- Depends on dns_resolver for IP addresses
 """
 
 from __future__ import annotations
@@ -18,27 +24,23 @@ from reconforge.core.plugin import BasePlugin
 from reconforge.core.result import Result, create_failure_result, create_success_result
 
 
-class NmapPlugin(BasePlugin):
-    """Detect services and versions on open ports using nmap."""
+class PortScanPlugin(BasePlugin):
+    """Scan top 1000 common ports using nmap."""
 
-    requires: ClassVar[list[str]] = ["naabu"]
+    requires: ClassVar[list[str]] = ["dns_resolver"]
 
     @property
     def name(self) -> str:
         """Return the plugin name."""
-        return "nmap"
+        return "port_scan"
 
     @property
     def description(self) -> str:
         """Return the plugin description."""
-        return "Detect services and versions using nmap"
+        return "Scan top 1000 common ports using nmap"
 
     def setup(self, **kwargs: object) -> None:
-        """Check if nmap is installed.
-
-        Raises:
-            RuntimeError: If nmap is not found in PATH.
-        """
+        """Check if nmap is installed."""
         if shutil.which("nmap") is None:
             raise RuntimeError(
                 "nmap is not installed or not in PATH. "
@@ -46,36 +48,19 @@ class NmapPlugin(BasePlugin):
             )
 
     def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
-        """Run nmap service detection on open ports from naabu.
-
-        Args:
-            target: Original target (unused, read from upstream).
-            upstream_results: Must contain "naabu" result.
-
-        Returns:
-            Result with list of service dicts in data field.
-        """
+        """Run nmap port scan on resolved IPs."""
         start = time.perf_counter()
 
-        naabu_result = upstream_results["naabu"]
-        if not naabu_result.is_success:
+        dns_result = upstream_results.get("dns_resolver")
+        if not dns_result or not dns_result.is_success:
             return create_failure_result(
                 module=self.name,
-                error=f"naabu failed: {naabu_result.errors}",
+                error="dns_resolver result not available or failed",
                 duration=timedelta(seconds=time.perf_counter() - start),
             )
 
-        ports = naabu_result.data
-        if not ports:
-            return create_success_result(
-                module=self.name,
-                data=[],
-                duration=timedelta(seconds=time.perf_counter() - start),
-                metadata={"count": 0},
-            )
-
-        targets = self._build_targets(ports)
-        if not targets:
+        ips = dns_result.data
+        if not ips:
             return create_success_result(
                 module=self.name,
                 data=[],
@@ -84,11 +69,12 @@ class NmapPlugin(BasePlugin):
             )
 
         try:
+            # Scan top 100 ports (modify to 1000 for deeper scan)
             proc = subprocess.run(
-                ["nmap", "-sV", "-oX", "-"] + targets,
+                ["nmap", "-sV", "-T4", "--top-ports", "100", "-oX", "-"] + ips,
                 capture_output=True,
                 text=True,
-                timeout=600,
+                timeout=60,
             )
             if proc.returncode != 0 and not proc.stdout:
                 stderr = proc.stderr.strip()
@@ -97,12 +83,12 @@ class NmapPlugin(BasePlugin):
                     error=f"nmap failed (exit {proc.returncode}): {stderr}",
                     duration=timedelta(seconds=time.perf_counter() - start),
                 )
-            services = self._parse_nmap_xml(proc.stdout)
+            ports = self._parse_nmap_xml(proc.stdout)
             return create_success_result(
                 module=self.name,
-                data=services,
+                data=ports,
                 duration=timedelta(seconds=time.perf_counter() - start),
-                metadata={"count": len(services)},
+                metadata={"count": len(ports), "scanned_ports": "top 1000"},
             )
         except FileNotFoundError:
             return create_failure_result(
@@ -113,45 +99,18 @@ class NmapPlugin(BasePlugin):
         except subprocess.TimeoutExpired:
             return create_failure_result(
                 module=self.name,
-                error="nmap timed out after 600 seconds",
+                error="nmap timed out after 60 seconds",
                 duration=timedelta(seconds=time.perf_counter() - start),
             )
 
-    def _build_targets(self, ports: list[dict[str, Any]]) -> list[str]:
-        """Build nmap target arguments grouping ports by IP.
-
-        Args:
-            ports: List of {ip, port} dicts from naabu.
-
-        Returns:
-            List of nmap target spec strings (e.g. "ip -p ports").
-        """
-        by_ip: dict[str, list[int]] = {}
-        for entry in ports:
-            ip = entry.get("ip", "")
-            port = entry.get("port", 0)
-            if ip and port:
-                by_ip.setdefault(ip, []).append(int(port))
-        targets: list[str] = []
-        for ip, ip_ports in by_ip.items():
-            port_list = ",".join(str(p) for p in sorted(set(ip_ports)))
-            targets.append(f"{ip} -p {port_list}")
-        return targets
-
     def _parse_nmap_xml(self, xml_output: str) -> list[dict[str, Any]]:
-        """Parse nmap XML output into service records.
-
-        Args:
-            xml_output: Raw nmap XML string.
-
-        Returns:
-            List of {host, port, protocol, service, product, version} dicts.
-        """
-        services: list[dict[str, Any]] = []
+        """Parse nmap XML output into port records."""
+        ports: list[dict[str, Any]] = []
         try:
             root = ET.fromstring(xml_output)
         except ET.ParseError:
-            return services
+            return ports
+
         for host in root.findall("host"):
             addr = host.find("address")
             ip = addr.get("addr", "") if addr is not None else ""
@@ -171,7 +130,7 @@ class NmapPlugin(BasePlugin):
                     service_name = service_elem.get("name", "")
                     product = service_elem.get("product", "")
                     version = service_elem.get("version", "")
-                services.append(
+                ports.append(
                     {
                         "host": ip,
                         "port": int(port_id) if port_id else 0,
@@ -181,4 +140,4 @@ class NmapPlugin(BasePlugin):
                         "version": version,
                     }
                 )
-        return services
+        return ports

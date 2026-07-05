@@ -1,7 +1,7 @@
 """ReconForge reporting orchestrator.
 
 Responsibilities:
-- Import reporters for JSON, Markdown, and HTML
+- Import reporters for JSON and Markdown
 - Handle optional file writes and output directory management
 
 Design:
@@ -16,7 +16,6 @@ import re
 from pathlib import Path
 
 from reconforge.core.pipeline import PipelineResult
-from reconforge.reporting.html_reporter import to_html
 from reconforge.reporting.json_reporter import to_json
 from reconforge.reporting.markdown_reporter import to_markdown
 
@@ -57,7 +56,6 @@ class Reporter:
         return {
             "json": to_json(result),
             "markdown": to_markdown(result),
-            "html": to_html(result),
         }
 
     def write(

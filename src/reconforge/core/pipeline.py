@@ -245,7 +245,10 @@ class Pipeline:
         return result
 
     def run(self, target: str, **kwargs: Any) -> PipelineResult:
-        """Execute the pipeline.
+        """Execute the pipeline with concurrent stage execution.
+
+        Plugins within the same topological stage run concurrently via
+        ThreadPoolExecutor. Stages execute in dependency order.
 
         Skips plugins whose upstream dependencies have failed.
 
@@ -256,71 +259,88 @@ class Pipeline:
         Returns:
             PipelineResult containing all results and errors.
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         from datetime import datetime
+        from threading import Lock
 
         start_time = datetime.now()
         pipeline_result = PipelineResult()
+        results_lock = Lock()
 
         logger.debug(f"Starting pipeline for target: {target}")
 
         try:
             stages = self._get_execution_order()
-            plugins_in_order = [
-                plugin_name
-                for stage in stages
-                for plugin_name in stage
-            ]
 
-            for plugin_name in plugins_in_order:
-                plugin = self._plugins[plugin_name]
+            for stage_idx, stage in enumerate(stages, start=1):
+                logger.info(
+                    f"Stage {stage_idx}/{len(stages)}: "
+                    f"{', '.join(stage)} "
+                    f"({len(stage)} plugin(s))"
+                )
 
-                # Determine which required upstreams failed
-                failed_deps = [
-                    dep_name
-                    for dep_name in plugin.requires
-                    if dep_name in self._results
-                    and self._results[dep_name].is_failure
-                ]
+                # Determine which plugins in this stage should be skipped
+                skipped = {}
+                ready = []
+                for plugin_name in stage:
+                    plugin = self._plugins[plugin_name]
+                    failed_deps = [
+                        dep_name
+                        for dep_name in plugin.requires
+                        if dep_name in self._results
+                        and self._results[dep_name].is_failure
+                    ]
 
-                skip = False
-                skip_reason = ""
-                if plugin.requires and failed_deps:
-                    if plugin.allow_partial:
-                        # Partial-tolerant: skip only when every upstream failed
-                        if len(failed_deps) == len(plugin.requires):
-                            skip = True
-                            skip_reason = "all upstream dependencies failed"
+                    if plugin.requires and failed_deps:
+                        if plugin.allow_partial:
+                            if len(failed_deps) == len(plugin.requires):
+                                skipped[plugin_name] = "all upstream dependencies failed"
+                            else:
+                                ready.append(plugin_name)
+                        else:
+                            skipped[plugin_name] = "upstream dependency failed"
                     else:
-                        # Strict: skip on any upstream failure
-                        skip = True
-                        skip_reason = "upstream dependency failed"
+                        ready.append(plugin_name)
 
-                if skip:
-                    logger.debug(
-                        f"Skipping {plugin_name}: {skip_reason} "
-                        f"(failed: {failed_deps})"
-                    )
-                    from reconforge.core.result import create_failure_result
+                # Register skipped plugins
+                for name, reason in skipped.items():
+                    logger.debug(f"Skipping {name}: {reason}")
                     skip_result = create_failure_result(
-                        module=plugin_name,
-                        error=f"Skipped: {skip_reason}",
+                        module=name,
+                        error=f"Skipped: {reason}",
                         duration=timedelta(0),
                     )
-                    self._results[plugin_name] = skip_result
+                    self._results[name] = skip_result
                     pipeline_result.add_result(skip_result)
+
+                # Execute ready plugins concurrently
+                if not ready:
                     continue
 
-                try:
-                    result = self._execute_plugin(plugin, target)
-                    pipeline_result.add_result(result)
-                except Exception as e:
-                    logger.error(f"Plugin {plugin_name} raised: {e}")
-                    error_result = create_failure_result(
-                        module=plugin_name,
-                        error=str(e),
-                        duration=timedelta(0),
-                    )
-                    pipeline_result.add_result(error_result)
+                stage_workers = min(len(ready), self._max_workers)
+                with ThreadPoolExecutor(max_workers=stage_workers) as executor:
+                    future_map = {
+                        executor.submit(
+                            self._execute_plugin,
+                            self._plugins[name],
+                            target,
+                        ): name
+                        for name in ready
+                    }
+
+                    for future in as_completed(future_map):
+                        name = future_map[future]
+                        try:
+                            result = future.result()
+                        except Exception as e:
+                            logger.error(f"Plugin {name} raised: {e}")
+                            result = create_failure_result(
+                                module=name,
+                                error=str(e),
+                                duration=timedelta(0),
+                            )
+                        with results_lock:
+                            pipeline_result.add_result(result)
 
         except PipelineError as e:
             logger.error(f"Pipeline error: {e}")

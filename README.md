@@ -1,224 +1,240 @@
 # ReconForge
 
-ReconForge is a modular, extensible reconnaissance framework for bug bounty and penetration testing.
-It couples a clean stdlib-only Python core with Kali Linux security tools via a dependency-aware plugin pipeline.Tools run concurrently wherever the dep graph allows.
+Penetration testing'in discovery fazı için basit ve etkili bir reconnaissance tool'u. Tek bir domain veya URL vererek otomatik olarak IP çözümü, subdomain keşfi, port taraması, teknoloji tespiti ve hassas dosya kontrolü yapar.
 
-## Quick Start
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-reconforge --help
-
-## Requirements
-
-- Python 3.11+
-- Kali Linux / Debian-based penetration testing distro
-- External tools:
-  - subfinder, assetfinder (passive subdomain discovery)
-  - httpx (HTTP probing, fingerprinting, tech detection)
-  - naabu (fast port scanning)
-  - nmap (service version detection)
-  - katana (web crawling / endpoint discovery)
-  - whois (domain registration lookup)
-
-
-## Reconnaissance Workflow
-
-The pipeline runs plugins in **stages**. Within each stage, independent plugins execute concurrently.
-Stages are ordered by the dependency graph declared in each plugin's 
-equires attribute.
-
-`
- TARGET INPUT (domain/IP)
-        |
-        v
- +------+-----------+---------+---------+
- | STAGE 1          |         |         |
- | normalise_url    |  dns    |  whois  |   <-- concurrent within stage
- | (domain* ->      |  resolve|  lookup |
- |  target format)  |         |         |
- +------------------+---------+---------+
-        |              |         |
-        +------+-------+---------+
-               |
-               v
- +------+------+------+------+
- | STAGE 2                   |
- | subfinder  |  assetfinder |   <-- concurrent
- | crtsh (cert logs)         |
- +------+------+------+------+
-               |
-        +------+------+
-        |             |
-        v             v
- +------+------+  +---+-------+
- | STAGE 3      |  | STAGE 3b  |
- | httpx_alive  |  | naabu     |   <-- concurrent
- | (HTTP probe) |  | (port scan)|
- +------+------+  +-----+-----+
-        |               |
-        v               v
- +------+------+  +-----+------+
- | STAGE 4a     |  | STAGE 4b   |
- | http_finger  |  | nmap       |   <-- concurrent
- | print        |  | (service   |
- | headers      |  |  version)  |
- | robots.txt   |  |            |
- | sitemap      |  |            |
- | tech_detect  |  |            |
- +------+-------+  +------------+
-        |
-        v
- +------+------+
- | STAGE 5      |
- | wayback      |   <-- independent
- | katana       |
- | js_discovery |
- | endpoints    |
- +------+-------+
-        |
-        v
- +------+-------+
- | STAGE 6       |
- | merge_engine  |
- +-------+-------+
-         |
-         v
- +-------+-------+
- | REPORTING      |
- | JSON  | MD     |
- | HTML  |        |
- +----------------+
-`
-
-
-## Plugin Execution Order
-
-Each plugin declares its upstream dependencies via a class-level 
-equires list.
-The pipeline resolves these into a directed acyclic graph and executes stages sequentially.
-Within a stage all plugins whose dependencies are satisfied run **concurrently** via ThreadPoolExecutor.
-
-| Plugin | Stage | Depends On | External Tool | Concurrent With |
-|--------|-------|------------|---------------|-----------------|
-| normalize_url | 1 | — | (stdlib) | dns_resolver, whois_lookup |
-| dns_resolver | 1 | — | (stdlib) | normalize_url, whois_lookup |
-| whois_lookup | 1 | — | whois | normalize_url, dns_resolver |
-| subfinder | 2 | normalize_url | subfinder | assetfinder, crtsh |
-| assetfinder | 2 | normalize_url | assetfinder | subfinder, crtsh |
-| crtsh | 2 | normalize_url | (stdlib urllib) | subfinder, assetfinder |
-| httpx_alive | 3b | subdomain results | httpx | naabu |
-| naabu | 3a | normalize_url | naabu | httpx_alive |
-| http_fingerprint | 4a | httpx_alive | httpx | nmap |
-| headers | 4a | httpx_alive | (stdlib urllib) | nmap |
-| robots_txt | 4a | httpx_alive | (stdlib urllib) | nmap |
-| sitemap | 4a | httpx_alive | (stdlib urllib) | nmap |
-| tech_detect | 4a | http_fingerprint | httpx | headers, robots, sitemap |
-| nmap | 4b | naabu | nmap | http_fingerprint, headers |
-| wayback | 5 | normalize_url | (stdlib urllib) | katana, js_discovery |
-| katana | 5 | httpx_alive | katana | wayback, js_discovery |
-| js_discovery | 5 | katana | (stdlib re) | wayback, katana |
-| endpoints | 5 | katana | (stdlib re) | wayback, js_discovery |
-| merge_engine | 6 | all plugins | (stdlib) | (last stage, single) |
-
-## Tool Parallelism & Sequencing
-
-The framework achieves concurrency at three levels:
-
-**1. Intra-stage concurrency**
-Independent plugins within the same stage run in parallel.
-Example: Stage 1 runs normalize_url, dns_resolver, and whois_lookup simultaneously.
-
-**2. Inter-stage streaming**
-Once a stage completes its results are fed to dependent stages immediately.
-The pipeline doesn not wait for unrelated branches — naabu and httpx_alive
-(stage 3) can both start as soon as their respective inputs are ready.
-
-**3. External tool subprocess**
-Each tool is a child subprocess with its own timeout. The Python framework
-is never blocked by a single slow tool across the entire pipeline.
-
-### Tool invocation patterns
-
-- **subprocess tools** (naabu, nmap, subfinder, assetfinder, httpx, katana, whois):
-  Called via subprocess.run() with stdin input, stdout capture, and explicit timeout.
-- **stdlib HTTP tools** (crtsh, wayback, headers, robots_txt, sitemap):
-  Use urllib.request.urlopen() — zero Python dependencies, mockable.
-- **Parsing-only tools** (js_discovery, endpoints):
-  Use stdlib 
-e and urllib.parse — no external subprocess.
-
-﻿
-## CLI Usage
-
-Common commands:
+## Kurulum
 
 ```bash
-reconforge scan example.com
-reconforge scan example.com --plugins dns_resolver,naabu,nmap
-reconforge list-plugins
-reconforge validate-config
-reconforge --version
+# Repoyu klonla
+git clone https://github.com/sngzege/ReconForge.git
+cd ReconForge
+
+# Python paketi olarak kur (global command olur)
+pip install --user --break-system-packages -e .
+
+# External tool'ları kur (Kali'de çoğu zaten kurulu gelir)
+sudo apt install subfinder assetfinder nmap whatweb curl
 ```
 
-Useful flags:
-- `--config` - path to custom TOML config
-- `--log-level` - override logging level (DEBUG, INFO, WARNING)
-- `--output-dir` - custom output directory
-- `--max-workers` - concurrency limit for the thread pool
+## Kullanım
 
-## Project Structure
+```bash
+# Domain ile tarama
+reconforge scan example.com
+
+# URL ile tarama
+reconforge scan https://example.com
+
+# IP ile tarama
+reconforge scan 192.168.1.1
+
+# Çıktı dizinini belirt
+reconforge scan example.com --output-dir ./results
+```
+
+## Workflow
+
+```
+INPUT (domain / URL / IP)
+        │
+        ▼
+┌───────────────────┐
+│  normalize_url    │  Input'u normalize eder (protocol, path, port temizler)
+└───────┬───────────┘
+        │
+        ▼
+┌───────────────────┐
+│  dns_resolver     │  Domain → IP adresleri (IPv4 + IPv6)
+└───────┬───────────┘
+        │
+        ├──────────────────┬──────────────────┐
+        ▼                  ▼                  ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ subdomain_   │  │ port_scan    │  │ tech_scan    │
+│ scan         │  │              │  │              │
+│              │  │ nmap         │  │ whatweb      │
+│ ┌──────────┐ │  │ top 100 port │  │              │
+│ │subfinder │ │  │ servis       │  │ HTTPServer,  │
+│ │assetfind.│ │  │ tespiti      │  │ Title,       │
+│ │crt.sh    │ │  │ (-sV)        │  │ HTML5,       │
+│ └──────────┘ │  │              │  │ framework'ler│
+│  paralel     │  │              │  │              │
+│  çalışır     │  │              │  │              │
+└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+       │                 │                  │
+       │                 │    ┌──────────────┐
+       │                 │    │ path_probe   │
+       │                 │    │              │
+       │                 │    │ curl ile 29  │
+       │                 │    │ hassas dosya │
+       │                 │    │ kontrolü     │
+       │                 │    └──────┬───────┘
+       │                 │           │
+       └────────┬────────┴───────────┘
+                │
+                ▼
+        ┌───────────────┐
+        │  RAPORLAMA    │
+        │               │
+        │ .md (birleşik)│
+        │ .json (detay) │
+        │ terminal (özet)│
+        └───────────────┘
+```
+
+## Kullanılan Tool'lar
+
+| Tool | Kullanım | Detay |
+|------|----------|-------|
+| **socket** (stdlib) | DNS çözümleme | `getaddrinfo()` ile IPv4 + IPv6 |
+| **subfinder** | Subdomain keşfi | `-silent -t 10`, 15s timeout |
+| **assetfinder** | Subdomain keşfi | `--subs-only`, 10s timeout |
+| **crt.sh** | Subdomain keşfi | Certificate Transparency log API, 5s timeout |
+| **nmap** | Port taraması | `-sV -T4 --top-ports 100 -oX -`, servis tespiti, 60s timeout |
+| **whatweb** | Teknoloji tespiti | `--log-json=`, HTTPServer, Title, framework, header tespiti, 15s timeout |
+| **curl** | Hassas dosya kontrolü | 29 path, 10 paralel thread, 5s timeout/path |
+
+### Path Probe - Kontrol Edilen Dosyalar
+
+```
+/robots.txt              /sitemap.xml
+/.git/config             /.git/HEAD
+/.env                    /.bash_history
+/.sh_history             /.htaccess
+/.htpasswd               /wp-admin
+/wp-login.php            /admin
+/login                   /phpmyadmin
+/server-status           /server-info
+/.well-known/security.txt /crossdomain.xml
+/clientaccesspolicy.xml  /api
+/swagger.json            /openapi.json
+/graphql                 /.vscode/sftp.json
+/backup.zip              /db.sql
+/dump.sql                /config.php
+/web.config
+```
+
+## Rapor Formatları
+
+### Markdown Raporu → Birleştirilmiş Bulgular
+`output/<target>_report.md` - İnsan okuması için optimize edilmiş, tüm bulgular kategorize edilmiş:
+
+```markdown
+## Target
+- **Domain:** example.com
+- **IPs:** 93.184.216.34
+
+## Subdomains (3)
+- www.example.com
+- api.example.com
+
+## Open Ports (2)
+| Host | Port | Service | Product |
+|------|------|---------|---------|
+| 93.184.216.34 | 80 | http | nginx |
+| 93.184.216.34 | 443 | https | nginx |
+
+## Technologies (3)
+- **HTTPServer:** nginx
+- **Title:** Example Domain
+
+## Sensitive Paths (1)
+| Status | URL | Size |
+|--------|-----|------|
+| 200 | https://example.com/robots.txt | 1234 bytes |
+```
+
+### JSON Raporu → Tool Bazlı Detaylı Çıktılar
+`output/<target>_report.json` - Her tool'un tam çıktısı, programatik kullanım için:
+
+```json
+{
+  "summary": {
+    "duration_seconds": 26.22,
+    "total_plugins": 6,
+    "successful": 6,
+    "failed": 0
+  },
+  "tools": {
+    "normalize_url": { "status": "success", "data": "example.com", ... },
+    "dns_resolver":  { "status": "success", "data": ["93.184.216.34"], ... },
+    "subdomain_scan": { "status": "success", "data": ["www.example.com"], ... },
+    "port_scan":     { "status": "success", "data": [{"host": "...", "port": 80}], ... },
+    "tech_scan":     { "status": "success", "data": [{"type": "HTTPServer"}], ... },
+    "path_probe":    { "status": "success", "data": [{"url": "...", "status_code": 200}], ... }
+  }
+}
+```
+
+### Terminal Çıktısı
+Tarama bittiğinde terminalde birleştirilmiş özet gösterilir:
+
+```
+======================================================================
+RECONFORGE DISCOVERY REPORT
+======================================================================
+
+[TARGET INFO]
+  Domain: example.com
+  IPs: 93.184.216.34
+
+[SUBDOMAINS] (3 found)
+  1. www.example.com
+  2. api.example.com
+
+[OPEN PORTS] (2 found)
+  1. 93.184.216.34:80 (http - nginx)
+  2. 93.184.216.34:443 (https - nginx)
+
+[TECHNOLOGIES] (3 detected)
+  HTTPServer: nginx
+  Title: Example Domain
+
+[SENSITIVE PATHS] (1 found)
+  1. [200] https://example.com/robots.txt (1234 bytes)
+
+======================================================================
+Total duration: 26.22s
+Successful plugins: 6/6
+======================================================================
+```
+
+## Plugin Yapısı
+
+| Plugin | Tool | Bağımlılık | Açıklama |
+|--------|------|------------|----------|
+| `normalize_url` | stdlib | - | URL/domain/IP normalize eder |
+| `dns_resolver` | stdlib socket | normalize_url | Domain → IP (IPv4 + IPv6) |
+| `subdomain_scan` | subfinder + assetfinder + crt.sh | normalize_url | 3 kaynaktan paralel subdomain keşfi |
+| `port_scan` | nmap | dns_resolver | Top 100 port, servis/version tespiti |
+| `tech_scan` | whatweb | normalize_url, dns_resolver | Web teknolojileri, sunucu, başlık tespiti |
+| `path_probe` | curl | normalize_url | 29 hassas dosya/dizin kontrolü (10 paralel) |
+
+## Proje Yapısı
 
 ```
 src/reconforge/
-  cli.py
-  core/          (stdlib-only core)
-  plugins/       (19 plugins)
-  reporting/     (JSON, MD, HTML reporters)
-tests/
-  plugins/       (per-plugin unit tests)
+├── cli.py                     # CLI entry point
+├── core/
+│   ├── config.py              # TOML + env config
+│   ├── loader.py              # Plugin loader
+│   ├── logging_setup.py       # Log ayarları
+│   ├── pipeline.py            # Dependency-based pipeline
+│   ├── plugin.py              # BasePlugin ABC
+│   └── result.py              # Result data model
+├── plugins/
+│   ├── normalize_url.py
+│   ├── dns_resolver.py
+│   ├── subdomain_scan.py
+│   ├── port_scan.py
+│   ├── tech_scan.py
+│   └── path_probe.py
+└── reporting/
+    ├── json_reporter.py       # Tool bazlı detaylı JSON
+    ├── markdown_reporter.py   # Birleştirilmiş Markdown
+    └── reporter.py            # Report orchestrator
 ```
 
-## Configuration
+## Lisans
 
-Example reconforge.toml:
-
-```toml
-thread_count = 10
-timeout = 300
-retry_count = 1
-log_level = "INFO"
-output_dir = "artifacts"
-rate_limit = 0
-```
-
-## Adding a Plugin
-
-1. Create a .py file in src/reconforge/plugins/.
-2. Subclass BasePlugin with name, description, requires, run().
-3. Return Result via factory helpers.
-4. Add unit tests in tests/plugins/.
-No core changes required.
-
-## Testing
-
-```bash
-pytest -m "not integration"    # unit tests only
-pytest                         # all tests
-```
-
-## Reporting
-
-The Reporter produces three formats from a single PipelineResult:
-- JSON - machine-readable with all plugin data
-- Markdown - human-readable summary with timeline
-- HTML - standalone styled report
-
-Artifacts: artifacts/reports/
-
-## Security
-
-- This framework automates security tooling for authorised assessments only.
-- Scope compliance remains the operator responsibility.
-- Some plugins make external network requests; review network policy before running.
+MIT
