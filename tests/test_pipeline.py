@@ -277,3 +277,132 @@ class TestPipeline:
 
         assert "1 plugins" in repr(pipeline)
         assert "max_workers=5" in repr(pipeline)
+
+
+
+# --- allow_partial test fixtures and tests ---
+
+
+class PaSourceA(BasePlugin):
+    """Upstream source A that succeeds."""
+
+    @property
+    def name(self) -> str:
+        return "pa_a"
+
+    def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
+        return create_success_result(
+            module=self.name, data=["a_data"], duration=timedelta(seconds=1)
+        )
+
+
+class PaSourceB(BasePlugin):
+    """Upstream source B that succeeds."""
+
+    @property
+    def name(self) -> str:
+        return "pa_b"
+
+    def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
+        return create_success_result(
+            module=self.name, data=["b_data"], duration=timedelta(seconds=1)
+        )
+
+
+class PaFailA(BasePlugin):
+    """Upstream source A that always fails."""
+
+    @property
+    def name(self) -> str:
+        return "pa_a"
+
+    def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
+        raise RuntimeError("pa_a failed")
+
+
+class PaFailB(BasePlugin):
+    """Upstream source B that always fails."""
+
+    @property
+    def name(self) -> str:
+        return "pa_b"
+
+    def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
+        raise RuntimeError("pa_b failed")
+
+
+class PaMerger(BasePlugin):
+    """Partial-tolerant merger: runs unless ALL upstreams fail."""
+
+    requires = ["pa_a", "pa_b"]
+    allow_partial = True
+
+    @property
+    def name(self) -> str:
+        return "pa_merger"
+
+    def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
+        merged: list[str] = []
+        for dep in self.requires:
+            r = upstream_results.get(dep)
+            if r is not None and r.is_success and isinstance(r.data, list):
+                merged.extend(r.data)
+        return create_success_result(
+            module=self.name, data=merged, duration=timedelta(seconds=1)
+        )
+
+
+class PaStrictMerger(BasePlugin):
+    """Strict merger: skips if ANY upstream fails (default behavior)."""
+
+    requires = ["pa_a", "pa_b"]
+    allow_partial = False
+
+    @property
+    def name(self) -> str:
+        return "pa_strict_merger"
+
+    def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
+        return create_success_result(
+            module=self.name, data=["strict"], duration=timedelta(seconds=1)
+        )
+
+
+class TestAllowPartial:
+    """Test allow_partial pipeline skip behavior."""
+
+    def test_runs_when_some_upstream_failed(self) -> None:
+        """allow_partial=True should run when only some upstreams failed."""
+        pipeline = Pipeline()
+        pipeline.add_plugin(PaSourceA())
+        pipeline.add_plugin(PaFailB())
+        pipeline.add_plugin(PaMerger(), depends_on=["pa_a", "pa_b"])
+
+        result = pipeline.run("example.com")
+        merger = result.get_results_by_module("pa_merger")[0]
+        assert merger.is_success
+        assert "a_data" in merger.data
+
+    def test_skipped_when_all_upstream_failed(self) -> None:
+        """allow_partial=True should still skip when ALL upstreams failed."""
+        pipeline = Pipeline()
+        pipeline.add_plugin(PaFailA())
+        pipeline.add_plugin(PaFailB())
+        pipeline.add_plugin(PaMerger(), depends_on=["pa_a", "pa_b"])
+
+        result = pipeline.run("example.com")
+        merger = result.get_results_by_module("pa_merger")[0]
+        assert merger.is_failure
+        assert "Skipped" in merger.errors[0]
+
+    def test_strict_skipped_when_any_upstream_failed(self) -> None:
+        """allow_partial=False (default) should skip on any upstream failure."""
+        pipeline = Pipeline()
+        pipeline.add_plugin(PaSourceA())
+        pipeline.add_plugin(PaFailB())
+        pipeline.add_plugin(PaStrictMerger(), depends_on=["pa_a", "pa_b"])
+
+        result = pipeline.run("example.com")
+        merger = result.get_results_by_module("pa_strict_merger")[0]
+        assert merger.is_failure
+        assert "Skipped" in merger.errors[0]

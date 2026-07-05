@@ -13,7 +13,6 @@ Design:
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import time
 from datetime import timedelta
@@ -21,6 +20,7 @@ from typing import ClassVar
 
 from reconforge.core.plugin import BasePlugin
 from reconforge.core.result import Result, create_failure_result, create_success_result
+from reconforge.core.tool_resolver import ToolResolver
 
 
 class KatanaPlugin(BasePlugin):
@@ -48,11 +48,7 @@ class KatanaPlugin(BasePlugin):
         Raises:
             RuntimeError: If katana is not found in PATH.
         """
-        if shutil.which("katana") is None:
-            raise RuntimeError(
-                "katana is not installed or not in PATH. "
-                "Install from: https://github.com/projectdiscovery/katana"
-            )
+        ToolResolver().resolve("katana")
 
     def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
         """Run katana to crawl alive hosts.

@@ -12,7 +12,6 @@ Design:
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import time
 from datetime import timedelta
@@ -20,6 +19,7 @@ from typing import ClassVar
 
 from reconforge.core.plugin import BasePlugin
 from reconforge.core.result import Result, create_failure_result, create_success_result
+from reconforge.core.tool_resolver import ToolResolver
 
 
 class SubfinderPlugin(BasePlugin):
@@ -47,11 +47,7 @@ class SubfinderPlugin(BasePlugin):
         Raises:
             RuntimeError: If subfinder is not found in PATH.
         """
-        if shutil.which("subfinder") is None:
-            raise RuntimeError(
-                "subfinder is not installed or not in PATH. "
-                "Install from: https://github.com/projectdiscovery/subfinder"
-            )
+        ToolResolver().resolve("subfinder")
 
     def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
         """Run subfinder on the target domain.

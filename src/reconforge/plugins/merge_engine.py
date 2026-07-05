@@ -29,6 +29,7 @@ class MergeEnginePlugin(BasePlugin):
     """
 
     requires: ClassVar[list[str]] = ["subfinder", "assetfinder", "crtsh"]
+    allow_partial: ClassVar[bool] = True
 
     @property
     def name(self) -> str:

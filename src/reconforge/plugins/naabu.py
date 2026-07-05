@@ -13,7 +13,6 @@ Design:
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import time
 from datetime import timedelta
@@ -21,6 +20,7 @@ from typing import Any, ClassVar
 
 from reconforge.core.plugin import BasePlugin
 from reconforge.core.result import Result, create_failure_result, create_success_result
+from reconforge.core.tool_resolver import ToolResolver
 
 
 class NaabuPlugin(BasePlugin):
@@ -48,11 +48,7 @@ class NaabuPlugin(BasePlugin):
         Raises:
             RuntimeError: If naabu is not found in PATH.
         """
-        if shutil.which("naabu") is None:
-            raise RuntimeError(
-                "naabu is not installed or not in PATH. "
-                "Install from: https://github.com/projectdiscovery/naabu"
-            )
+        ToolResolver().resolve("naabu")
 
     def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
         """Run naabu to scan open ports.
@@ -102,20 +98,24 @@ class NaabuPlugin(BasePlugin):
                 )
 
             results: list[dict[str, Any]] = []
+            seen: set[tuple[str, int]] = set()
             for line in proc.stdout.splitlines():
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     entry = json.loads(line)
-                    results.append(
-                        {
-                            "ip": entry.get("ip", ""),
-                            "port": entry.get("port", 0),
-                        }
-                    )
                 except json.JSONDecodeError:
                     continue
+                ip = entry.get("ip", "")
+                port = entry.get("port", 0)
+                key = (ip, port)
+                if key in seen:
+                    # naabu may emit duplicate (ip, port) records (e.g. one
+                    # per protocol pass); keep only the first occurrence.
+                    continue
+                seen.add(key)
+                results.append({"ip": ip, "port": port})
 
             return create_success_result(
                 module=self.name,

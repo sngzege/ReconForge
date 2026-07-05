@@ -274,21 +274,36 @@ class Pipeline:
             for plugin_name in plugins_in_order:
                 plugin = self._plugins[plugin_name]
 
-                # Skip if any required upstream has failed
+                # Determine which required upstreams failed
+                failed_deps = [
+                    dep_name
+                    for dep_name in plugin.requires
+                    if dep_name in self._results
+                    and self._results[dep_name].is_failure
+                ]
+
                 skip = False
-                for dep_name in plugin.requires:
-                    if dep_name in self._results and self._results[dep_name].is_failure:
-                        logger.debug(
-                            f"Skipping {plugin_name}: upstream '{dep_name}' failed"
-                        )
+                skip_reason = ""
+                if plugin.requires and failed_deps:
+                    if plugin.allow_partial:
+                        # Partial-tolerant: skip only when every upstream failed
+                        if len(failed_deps) == len(plugin.requires):
+                            skip = True
+                            skip_reason = "all upstream dependencies failed"
+                    else:
+                        # Strict: skip on any upstream failure
                         skip = True
-                        break
+                        skip_reason = "upstream dependency failed"
 
                 if skip:
+                    logger.debug(
+                        f"Skipping {plugin_name}: {skip_reason} "
+                        f"(failed: {failed_deps})"
+                    )
                     from reconforge.core.result import create_failure_result
                     skip_result = create_failure_result(
                         module=plugin_name,
-                        error=f"Skipped: upstream dependency failed",
+                        error=f"Skipped: {skip_reason}",
                         duration=timedelta(0),
                     )
                     self._results[plugin_name] = skip_result

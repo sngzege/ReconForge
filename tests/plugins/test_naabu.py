@@ -102,3 +102,37 @@ class TestNaabuPlugin:
             result = plugin.run("example.com", upstream)
 
         assert result.is_failure
+
+    def test_dedup_duplicate_ports(self) -> None:
+        """Should deduplicate naabu records by (ip, port)."""
+        plugin = NaabuPlugin()
+        upstream = {"dns_resolver": _make_dns_result(["93.184.216.34"])}
+
+        # naabu emits duplicate (ip, port) records (e.g. one per protocol pass)
+        json_lines = "\n".join(
+            [
+                json.dumps({"ip": "93.184.216.34", "port": 443}),
+                json.dumps({"ip": "93.184.216.34", "port": 443}),
+                json.dumps({"ip": "93.184.216.34", "port": 80}),
+                json.dumps({"ip": "93.184.216.34", "port": 80}),
+                json.dumps({"ip": "93.184.216.34", "port": 81}),
+            ]
+        )
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json_lines + "\n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = plugin.run("example.com", upstream)
+
+        assert result.is_success
+        assert len(result.data) == 3
+        pairs = {(d["ip"], d["port"]) for d in result.data}
+        assert pairs == {
+            ("93.184.216.34", 443),
+            ("93.184.216.34", 80),
+            ("93.184.216.34", 81),
+        }
+

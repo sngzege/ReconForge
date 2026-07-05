@@ -13,7 +13,6 @@ Design:
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import time
 from datetime import timedelta
@@ -21,6 +20,7 @@ from typing import Any, ClassVar
 
 from reconforge.core.plugin import BasePlugin
 from reconforge.core.result import Result, create_failure_result, create_success_result
+from reconforge.core.tool_resolver import ToolResolver
 
 
 class TechDetectPlugin(BasePlugin):
@@ -48,11 +48,7 @@ class TechDetectPlugin(BasePlugin):
         Raises:
             RuntimeError: If httpx is not found in PATH.
         """
-        if shutil.which("httpx") is None:
-            raise RuntimeError(
-                "httpx is not installed or not in PATH. "
-                "Install from: https://github.com/projectdiscovery/httpx"
-            )
+        ToolResolver().resolve("httpx")
 
     def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
         """Detect technologies on alive hosts.

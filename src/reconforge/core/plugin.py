@@ -104,6 +104,15 @@ class BasePlugin(ABC):
         requires: ClassVar[list[str]] = ["normalize_url", "dns_resolver"]
     """
 
+    allow_partial: ClassVar[bool] = False
+    """Whether this plugin may run with partial upstream data.
+
+    When True, the Pipeline only skips this plugin if ALL of its declared
+    `requires` failed. When False (default), the plugin is skipped if ANY
+    required upstream failed. Set True for plugins that can tolerate
+    missing upstream sources (e.g. merge_engine).
+    """
+
     @abstractmethod
     def run(self, target: str, upstream_results: dict[str, Result]) -> Result:
         """Execute the plugin's main logic.
